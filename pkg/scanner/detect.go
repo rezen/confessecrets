@@ -47,6 +47,10 @@ func detectorFor(path string) Detector {
 		return YAMLDetector{}
 	case ".xml":
 		return XMLDetector{}
+	case ".config":
+		// .NET configuration files (App.config, web.config, *.dll.config, and
+		// Web.{Debug,Release}.config transforms) are XML documents.
+		return XMLDetector{}
 	case ".properties":
 		return PropertiesDetector{}
 	case ".ini":

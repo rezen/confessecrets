@@ -60,6 +60,9 @@ func TestDetectorFor(t *testing.T) {
 		{"values.yaml", YAMLDetector{}},
 		{"values.yml", YAMLDetector{}},
 		{"web.xml", XMLDetector{}},
+		{"web.config", XMLDetector{}},
+		{"App.config", XMLDetector{}},
+		{"MyApp.dll.config", XMLDetector{}},
 		{".env", DotenvDetector{}},
 		{".env.local", DotenvDetector{}},
 		{"app.env", DotenvDetector{}},
@@ -749,6 +752,93 @@ func TestDetectXML(t *testing.T) {
 		if f.RawValue == "https://example.com/path" {
 			t.Errorf("plain url should not be flagged: %+v", f)
 		}
+	}
+}
+
+func TestDetectDotNetConfig(t *testing.T) {
+	rules := testRules(t)
+
+	// Representative web.config: appSettings name/value pairs are the canonical
+	// secret location in .NET configuration files.
+	content := `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <appSettings>
+    <add key="ApiKeySecret" value="abcd1234efgh5678" />
+    <add key="DisplayName" value="My Application" />
+  </appSettings>
+</configuration>`
+
+	findings := detectXML("web.config", []byte(content), rules)
+	got := keySet(findings)
+
+	if _, ok := got["ApiKeySecret"]; !ok {
+		t.Errorf("expected name/value pair finding for ApiKeySecret, got %v", got)
+	}
+
+	for _, f := range findings {
+		if f.RawValue == "My Application" {
+			t.Errorf("display name should not be flagged: %+v", f)
+		}
+	}
+}
+
+func TestDetectXMLAttrReasons(t *testing.T) {
+	rules := testRules(t)
+
+	// A connectionStrings entry whose name attribute ("DefaultConnection") is
+	// benign but whose connectionString carries a credential should still be
+	// flagged via classifySecretReason.
+	content := `<configuration>
+  <connectionStrings>
+    <add name="DefaultConnection"
+         connectionString="Server=db;User Id=sa;Password=hunter2secret;" />
+    <add name="Telemetry" connectionString="Server=metrics;Trusted_Connection=True;" />
+  </connectionStrings>
+</configuration>`
+
+	findings := detectXML("web.config", []byte(content), rules)
+
+	var flagged bool
+	for _, f := range findings {
+		if f.Reason == reasonConnectionStringIndicator &&
+			f.Value != "" && f.NamePath == "xml_attr" {
+			flagged = true
+		}
+		if strings.Contains(f.RawValue, "Trusted_Connection") {
+			t.Errorf("credential-free connection string should not be flagged: %+v", f)
+		}
+	}
+
+	if !flagged {
+		t.Errorf("expected connection-string finding from attribute value, got %+v", findings)
+	}
+}
+
+func TestDetectXMLTextReason(t *testing.T) {
+	rules := testRules(t)
+
+	// A benignly named element whose text is a credential-bearing connection
+	// string should still be flagged via classifySecretReason.
+	content := `<settings>
+  <database>Server=db;User Id=sa;Password=hunter2secret;</database>
+  <region>Server=metrics;Trusted_Connection=True;</region>
+</settings>`
+
+	findings := detectXML("app.config", []byte(content), rules)
+
+	var flagged bool
+	for _, f := range findings {
+		if f.Reason == reasonConnectionStringIndicator &&
+			f.Name == "database" && f.NamePath == "xml_element" {
+			flagged = true
+		}
+		if strings.Contains(f.RawValue, "Trusted_Connection") {
+			t.Errorf("credential-free connection string should not be flagged: %+v", f)
+		}
+	}
+
+	if !flagged {
+		t.Errorf("expected connection-string finding from element text, got %+v", findings)
 	}
 }
 

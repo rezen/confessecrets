@@ -14,7 +14,8 @@ It coaxes out secrets two complementary ways:
   such as `AKIA…`, `ghp_…`, `sk_live_…`), no matter how innocent its key name
   claims to be.
 
-Supported formats: **JSON / JSONC**, **YAML**, **XML**, **dotenv**
+Supported formats: **JSON / JSONC**, **YAML**, **XML** (including .NET
+`App.config` / `web.config` and other `.config` files), **dotenv**
 (`.env`, `.env.*`, `*.env`), **Java properties** (`.properties`), and
 **INI** (`.ini`).
 

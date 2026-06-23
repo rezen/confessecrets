@@ -47,6 +47,7 @@ func detectXML(file string, data []byte, rules []Rule) []Finding {
 		case xml.StartElement:
 			stack = append(stack, &frame{name: t.Name.Local})
 			findings = append(findings, detectXMLAttrs(file, pathOf(), t.Attr, rules)...)
+			findings = append(findings, detectXMLAttrReasons(file, pathOf(), t.Attr, rules)...)
 
 			for _, attr := range t.Attr {
 				findings = append(findings, detectValuePatterns(file, pathOf(), attr.Name.Local, attr.Value, rules)...)
@@ -72,6 +73,7 @@ func detectXML(file string, data []byte, rules []Rule) []Finding {
 			}
 
 			findings = append(findings, detectXMLElementText(file, path, f.name, text, rules)...)
+			findings = append(findings, detectXMLTextReason(file, path, f.name, text, rules)...)
 			findings = append(findings, detectValuePatterns(file, path, f.name, text, rules)...)
 		}
 	}
@@ -111,6 +113,91 @@ func detectXMLElementText(file, path, elem, text string, rules []Rule) []Finding
 	}
 
 	return findings
+}
+
+// detectXMLAttrReasons flags attribute values whose shape betrays a secret
+// (connection strings, JWTs, private keys, credential-bearing URLs) regardless
+// of the attribute's name. This catches the common .NET case of a
+// <connectionStrings> entry whose connectionString="...;User Id=...;Password=..."
+// carries a credential even though its name attribute is benign.
+//
+// Attributes whose name already signals a secret are skipped here because the
+// name-driven path in detectXMLAttrs runs the same classifySecretReason check
+// and would otherwise produce a duplicate finding.
+func detectXMLAttrReasons(file, path string, attrs []xml.Attr, rules []Rule) []Finding {
+	var findings []Finding
+
+	for _, attr := range attrs {
+		if nameSignalsSecretForAny(attr.Name.Local, rules) {
+			continue
+		}
+
+		value := normalizeScalar(attr.Value)
+		if value == "" || valueSuppressed(value, rules) {
+			continue
+		}
+
+		reason := classifySecretReason(value)
+		if reason == "" {
+			continue
+		}
+
+		findings = append(findings, newFinding(
+			file,
+			path,
+			"xml_attr",
+			"xml_attr_value",
+			attr.Name.Local,
+			value,
+			reason,
+		))
+	}
+
+	return findings
+}
+
+// detectXMLTextReason flags element text whose shape betrays a secret
+// (connection strings, JWTs, private keys, credential-bearing URLs) regardless
+// of the element's name, e.g. <connectionString>...;User Id=...;Password=...</connectionString>.
+//
+// Elements whose name already signals a secret are skipped because the
+// name-driven detectXMLElementText runs the same classifySecretReason check and
+// would otherwise produce a duplicate finding.
+func detectXMLTextReason(file, path, elem, text string, rules []Rule) []Finding {
+	if nameSignalsSecretForAny(elem, rules) {
+		return nil
+	}
+
+	value := normalizeScalar(text)
+	if value == "" || valueSuppressed(value, rules) {
+		return nil
+	}
+
+	reason := classifySecretReason(value)
+	if reason == "" {
+		return nil
+	}
+
+	return []Finding{newFinding(
+		file,
+		path,
+		"xml_element",
+		"xml_text",
+		elem,
+		value,
+		reason,
+	)}
+}
+
+// nameSignalsSecretForAny reports whether name signals a secret under any rule.
+func nameSignalsSecretForAny(name string, rules []Rule) bool {
+	for _, rule := range rules {
+		if nameSignalsSecret(name, rule) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding {
