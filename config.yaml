@@ -1,0 +1,84 @@
+files:
+  allow:
+    - "**/*.json"
+    - "**/*.yaml"
+    - "**/*.yml"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/*.env"
+    - "**/*.xml"
+    - "**/*.properties"
+    - "**/*.ini"
+    -
+  deny:
+    - "**/cerlet.ini"
+    - "**/pytest.ini"
+    - "**/site-packages/**"
+    - "**/.venv/**"
+    - "**/test/**"
+    - "**/.git/**"
+    - "**/node_modules/**"
+    - "**/vendor/**"
+    - "**/testdata/**"
+
+rules:
+  - name_paths:
+      - name
+      - key
+      - field
+      - env.name
+    value_paths:
+      - value
+      - val
+      - secret
+      - env.value
+    name_regex: '(?i)(secret|token|api[_-]?key|password|passwd|pwd|credential|private[_-]?key|access[_-]?key|client[_-]?secret|signing[_-]?key|auth)'
+
+    min_value_len: 8
+
+    # Names matching any of these patterns are never treated as secrets, even if
+    # they match name_regex (e.g. "label"/"labelKey" matching the "key" alternative).
+    ignore_name_patterns:
+      - '(?i)(label|text|title|description|author|error|subject|template|input|output|message|comment|summary|placeholder|forgot)'
+
+    ignore_value_prefixes:
+      - vault://
+      - sm://
+      - ref+awssecrets://
+      - "@{"
+      - ${
+      - '%DR'
+      - '%EEA_'
+      - '%{hiera'
+      - '%{alias'
+      - 'SVC_SF'
+      - svc_
+      - PWD-
+      - BBP_BSC_
+      - ADLS-
+      - "MULE-"
+      - 'HTTP-'
+      - '@Microsoft.Key'
+      - $ANSIBLE_VAULT
+      - /api
+      - anonymous 
+      - RootManageSharedAccessKey 
+      - '[parameters('
+      - '/etc/'
+      - /assets
+      - <PLACE
+      - 'azure-key-vault-properties-provider'
+      - assets/
+      - 'direct:'
+      - your
+      - vru
+      - reverseproxy-
+      - "#['https://login.microsoftonline.com"
+      - 'res:'
+      - reverseproxy
+
+    ignore_value_patterns:
+
+      - '^ENC\[.*\]$'
+      - '^arn:aws:secretsmanager:'
+      - '^projects\/[^\/]+\/secrets\/'
