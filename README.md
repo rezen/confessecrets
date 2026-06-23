@@ -1,15 +1,18 @@
 # confesecrets
 
-A secret scanner for **structured configuration files**. It walks a file or
-directory and reports likely secrets as newline-delimited JSON (NDJSON).
+*Every config file has something to confess.*
 
-It detects secrets two complementary ways:
+A secret scanner for **structured configuration files** that gets your configs to
+spill their guts. It walks a file or directory, hears out every confession, and
+reports likely secrets as newline-delimited JSON (NDJSON).
 
-- **Name-driven** — a key whose name matches a configured regex (e.g. `password`,
+It coaxes out secrets two complementary ways:
+
+- **Name-driven** — a key whose name practically advertises guilt (e.g. `password`,
   `api_key`, `client_secret`) paired with a populated, secret-looking value.
-- **Value-driven** — a value whose *shape* matches a known secret token
-  (gitleaks-style patterns such as `AKIA…`, `ghp_…`, `sk_live_…`), regardless of
-  its key name.
+- **Value-driven** — a value whose *shape* gives it away (gitleaks-style patterns
+  such as `AKIA…`, `ghp_…`, `sk_live_…`), no matter how innocent its key name
+  claims to be.
 
 Supported formats: **JSON / JSONC**, **YAML**, **XML**, **dotenv**
 (`.env`, `.env.*`, `*.env`), **Java properties** (`.properties`), and
@@ -68,12 +71,14 @@ go run ./cmd/confesecrets -path ~/repos | tee found.txt
 | `1`  | Scan completed, findings written |
 | `2`  | A fatal error occurred           |
 
-This makes it CI-friendly: a non-zero exit fails the job when secrets are found.
+This makes it CI-friendly: a non-zero exit fails the job the moment something
+confesses.
 
 ## Output
 
-One JSON object per finding, per line. Values are redacted; the SHA-256 of the
-raw value is included so you can correlate without storing the secret.
+One JSON object per confession, per line. Values are redacted — what's said in the
+confessional stays in the confessional — but the SHA-256 of the raw value is
+included so you can correlate without storing the secret itself.
 
 ```json
 {
@@ -97,8 +102,8 @@ remaining claims under `extra`).
 
 ## Configuration
 
-The config (default `config.yaml`) controls which files are scanned and what
-counts as a secret.
+The config (default `config.yaml`) decides whose confessions you hear — which
+files are scanned and what actually counts as a secret worth flagging.
 
 ```yaml
 files:
