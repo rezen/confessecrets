@@ -43,10 +43,13 @@ jobs:
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           name="confessecrets-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}${ext}"
           go build -v -ldflags "-s -w" -o "$name" ./cmd/confessecrets
+          sha256sum "$name" > "$name.sha256"
           echo "ASSET=$name" >> "$GITHUB_ENV"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
           generate_release_notes: true
