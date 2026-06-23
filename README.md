@@ -1,4 +1,4 @@
-# confesecrets
+# confessecrets
 
 *Every config file has something to confess.*
 
@@ -25,34 +25,34 @@ Supported formats: **JSON / JSONC**, **YAML**, **XML**, **dotenv**
 ## Build
 
 ```sh
-# Build a binary into ./confesecrets
-go build -o confesecrets ./cmd/confesecrets
+# Build a binary into ./confessecrets
+go build -o confessecrets ./cmd/confessecrets
 
 # Or install it onto your PATH (into $GOBIN / $GOPATH/bin)
-go install github.com/rezen/confesecrets/cmd/confesecrets@latest
+go install github.com/rezen/confessecrets/cmd/confessecrets@latest
 ```
 
 ## Run
 
-The scanner is the `cmd/confesecrets` package — run the **package**, not a single
+The scanner is the `cmd/confessecrets` package — run the **package**, not a single
 file:
 
 ```sh
 # From source
-go run ./cmd/confesecrets -config config.yaml -path ./path/to/scan
+go run ./cmd/confessecrets -config config.yaml -path ./path/to/scan
 
 # Or with the built binary
-./confesecrets -config config.yaml -path ./path/to/scan
+./confessecrets -config config.yaml -path ./path/to/scan
 ```
 
 > Note: `go run main.go` will fail — the program is split across several files in
-> the package. Use `go run ./cmd/confesecrets` (or `go run .` from inside that
+> the package. Use `go run ./cmd/confessecrets` (or `go run .` from inside that
 > directory).
 
 Findings are written as NDJSON to stdout by default. Redirect or `tee` to save:
 
 ```sh
-go run ./cmd/confesecrets -path ~/repos | tee found.txt
+go run ./cmd/confessecrets -path ~/repos | tee found.txt
 ```
 
 ### Flags
@@ -158,7 +158,7 @@ go vet ./...
 ## Project layout
 
 ```
-cmd/confesecrets/   CLI entry point (flag parsing, output)
+cmd/confessecrets/   CLI entry point (flag parsing, output)
 pkg/scanner/        library: config, file walking, detection
   models.go         types (Config, Rule, Finding, Meta, Detector…)
   files.go          config loading, file walking/filtering, format dispatch

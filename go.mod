@@ -1,4 +1,4 @@
-module github.com/rezen/confesecrets
+module github.com/rezen/confessecrets
 
 go 1.26.1
 

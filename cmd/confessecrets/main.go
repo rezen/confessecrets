@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/rezen/confesecrets/pkg/scanner"
+	"github.com/rezen/confessecrets/pkg/scanner"
 )
 
 func main() {
