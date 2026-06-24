@@ -13,13 +13,13 @@ import (
 // doesn't parse cleanly, mirroring the JSON/YAML detectors.
 type PropertiesDetector struct{}
 
-func (PropertiesDetector) Detect(file string, data []byte, rules []Rule) []Finding {
+func (PropertiesDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 	root, err := parseProperties(data)
 	if err != nil {
-		return detectPropertiesLines(file, data, rules)
+		return detectPropertiesLines(file, data, set)
 	}
 
-	return detectStructured(file, root, rules)
+	return detectStructured(file, root, set)
 }
 
 // parseProperties loads .properties bytes into a flat map for detectStructured.
@@ -50,7 +50,7 @@ func parseProperties(data []byte) (map[string]any, error) {
 // separated by '=', ':', or whitespace, a logical line may span several
 // physical lines via a trailing backslash, and backslash escapes (\=, \:, \t,
 // \uXXXX, ...) are decoded before matching.
-func detectPropertiesLines(file string, data []byte, rules []Rule) []Finding {
+func detectPropertiesLines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
 	lines := strings.Split(string(data), "\n")
 
@@ -82,7 +82,7 @@ func detectPropertiesLines(file string, data []byte, rules []Rule) []Finding {
 		key := unescapeProperty(rawKey)
 		value := unescapeProperty(rawValue)
 
-		for _, rule := range rules {
+		for _, rule := range set.Rules {
 			if !nameSignalsSecret(key, rule) {
 				continue
 			}
@@ -92,7 +92,7 @@ func detectPropertiesLines(file string, data []byte, rules []Rule) []Finding {
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+			if reason == "" && !isLikelySecretValue(key, value, rule) {
 				continue
 			}
 			if reason == "" {
@@ -110,7 +110,7 @@ func detectPropertiesLines(file string, data []byte, rules []Rule) []Finding {
 			))
 		}
 
-		findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", startLine+1), key, value, rules)...)
+		findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", startLine+1), key, value, set)...)
 	}
 
 	return findings

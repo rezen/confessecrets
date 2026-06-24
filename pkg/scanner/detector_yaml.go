@@ -14,16 +14,16 @@ var yamlKeyValueRe = regexp.MustCompile(`^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$`)
 // templated YAML that doesn't parse cleanly.
 type YAMLDetector struct{}
 
-func (YAMLDetector) Detect(file string, data []byte, rules []Rule) []Finding {
+func (YAMLDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 	var root any
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return detectYAMLLines(file, data, rules)
+		return detectYAMLLines(file, data, set)
 	}
 
-	return detectStructured(file, root, rules)
+	return detectStructured(file, root, set)
 }
 
-func detectYAMLLines(file string, data []byte, rules []Rule) []Finding {
+func detectYAMLLines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
 	lines := strings.Split(string(data), "\n")
 
@@ -45,7 +45,7 @@ func detectYAMLLines(file string, data []byte, rules []Rule) []Finding {
 		key := strings.TrimSpace(m[1])
 		value := cleanYamlScalar(m[2])
 
-		for _, rule := range rules {
+		for _, rule := range set.Rules {
 			if !nameSignalsSecret(key, rule) {
 				continue
 			}
@@ -55,7 +55,7 @@ func detectYAMLLines(file string, data []byte, rules []Rule) []Finding {
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+			if reason == "" && !isLikelySecretValue(key, value, rule) {
 				continue
 			}
 			if reason == "" {
@@ -73,7 +73,7 @@ func detectYAMLLines(file string, data []byte, rules []Rule) []Finding {
 			))
 		}
 
-		findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, rules)...)
+		findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, set)...)
 	}
 
 	return findings

@@ -14,16 +14,16 @@ var jsonishKVRe = regexp.MustCompile(
 // and falls back to line-based scanning for non-standard JSON.
 type JSONDetector struct{}
 
-func (JSONDetector) Detect(file string, data []byte, rules []Rule) []Finding {
+func (JSONDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 	var root any
 	if err := parseFlexibleJSON(data, &root); err != nil {
-		return detectJSONLines(file, data, rules)
+		return detectJSONLines(file, data, set)
 	}
 
-	return detectStructured(file, root, rules)
+	return detectStructured(file, root, set)
 }
 
-func detectJSONLines(file string, data []byte, rules []Rule) []Finding {
+func detectJSONLines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
 	lines := strings.Split(string(data), "\n")
 
@@ -32,7 +32,7 @@ func detectJSONLines(file string, data []byte, rules []Rule) []Finding {
 			key := match[1]
 			value := match[3]
 
-			for _, rule := range rules {
+			for _, rule := range set.Rules {
 				if !nameSignalsSecret(key, rule) {
 					continue
 				}
@@ -42,7 +42,7 @@ func detectJSONLines(file string, data []byte, rules []Rule) []Finding {
 				}
 
 				reason := classifySecretReason(value)
-				if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+				if reason == "" && !isLikelySecretValue(key, value, rule) {
 					continue
 				}
 				if reason == "" {
@@ -60,7 +60,7 @@ func detectJSONLines(file string, data []byte, rules []Rule) []Finding {
 				))
 			}
 
-			findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, rules)...)
+			findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, set)...)
 		}
 	}
 

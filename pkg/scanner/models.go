@@ -1,10 +1,19 @@
 package scanner
 
-import "regexp"
+import (
+	"regexp"
+
+	"gopkg.in/yaml.v3"
+)
 
 type Config struct {
-	Files FilePolicy   `yaml:"files"`
-	Rules []RuleConfig `yaml:"rules"`
+	Files     FilePolicy       `yaml:"files"`
+	Rules     []RuleConfig     `yaml:"rules"`
+	Detectors []DetectorConfig `yaml:"detectors"`
+	// Filter is an optional expr-lang expression evaluated against each finding;
+	// when it is true the finding is dropped. See Filter for the available
+	// variables. Empty means no filtering.
+	Filter string `yaml:"filter"`
 }
 
 type FilePolicy struct {
@@ -13,36 +22,151 @@ type FilePolicy struct {
 }
 
 type RuleConfig struct {
-	NamePaths           []string `yaml:"name_paths"`
-	ValuePaths          []string `yaml:"value_paths"`
-	NameRegex           string   `yaml:"name_regex"`
-	MinValueLen         int      `yaml:"min_value_len"`
-	IgnoreNamePatterns  []string `yaml:"ignore_name_patterns"`
-	IgnoreValuePrefixes []string `yaml:"ignore_value_prefixes"`
-	IgnoreValuePatterns []string `yaml:"ignore_value_patterns"`
+	NamePaths  []string `yaml:"name_paths"`
+	ValuePaths []string `yaml:"value_paths"`
+	// NameRegexes is a list of name patterns. Each entry is either a bare regex
+	// string or a {name, regex} mapping; a name matching any entry signals a
+	// secret.
+	NameRegexes []NameRegexEntry `yaml:"name_regexes"`
+	MinValueLen int              `yaml:"min_value_len"`
+	// MinEntropy, when > 0, gates name-driven findings: a value flagged because
+	// its key name looks secret-y must have at least this Shannon entropy
+	// (bits/symbol) or it is treated as a placeholder and dropped. Values that
+	// carry a definite secret reason (JWT, private key, URL credentials) bypass
+	// the gate.
+	MinEntropy float64 `yaml:"min_entropy"`
+	// HighEntropyThreshold, when > 0, enables a generic detector that flags any
+	// value whose Shannon entropy meets the threshold, regardless of key name.
+	HighEntropyThreshold float64 `yaml:"high_entropy_threshold"`
+	// MaxNameValueSimilarity, when > 0, drops name-driven findings whose value is
+	// at least this similar (0..1) to the key name — near-echoes such as
+	// password="password1" or passwd="passw0rd" that the exact-echo check misses.
+	// Similarity is the max of normalized Levenshtein and Jaro-Winkler.
+	MaxNameValueSimilarity float64  `yaml:"max_name_value_similarity"`
+	IgnoreNamePatterns     []string `yaml:"ignore_name_patterns"`
+	IgnoreValuePrefixes    []string `yaml:"ignore_value_prefixes"`
+	IgnoreValuePatterns    []string `yaml:"ignore_value_patterns"`
+}
+
+// NameRegexEntry is one entry of a rule's name_regexes list. It accepts two YAML
+// forms: a bare scalar (the regex, unnamed) or a mapping with `name` and `regex`
+// keys. The name is an optional human-readable label for the pattern.
+type NameRegexEntry struct {
+	Name  string
+	Regex string
+}
+
+// UnmarshalYAML accepts either a scalar regex string or a {name, regex} mapping.
+func (e *NameRegexEntry) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		e.Regex = value.Value
+		return nil
+	}
+
+	var m struct {
+		Name  string `yaml:"name"`
+		Regex string `yaml:"regex"`
+	}
+	if err := value.Decode(&m); err != nil {
+		return err
+	}
+
+	e.Name = m.Name
+	e.Regex = m.Regex
+	return nil
 }
 
 type Rule struct {
-	NamePaths           []string
-	ValuePaths          []string
-	NameRegex           *regexp.Regexp
-	MinValueLen         int
-	IgnoreNamePatterns  []*regexp.Regexp
-	IgnoreValuePrefixes []string
-	IgnoreValuePatterns []*regexp.Regexp
+	NamePaths              []string
+	ValuePaths             []string
+	NameRegexes            []NamedRegex
+	MinValueLen            int
+	MinEntropy             float64
+	HighEntropyThreshold   float64
+	MaxNameValueSimilarity float64
+	IgnoreNamePatterns     []*regexp.Regexp
+	IgnoreValuePrefixes    []string
+	IgnoreValuePatterns    []*regexp.Regexp
+}
+
+// NamedRegex is a compiled name pattern with its optional label.
+type NamedRegex struct {
+	Name  string
+	Regex *regexp.Regexp
+}
+
+// DetectorConfig is a trufflehog-style custom value-pattern detector as parsed
+// from YAML, recognizing a secret by the shape of the value alone. The schema
+// mirrors trufflehog's custom detectors
+// (https://trufflesecurity.com/docs/custom-detectors): a detector fires when a
+// keyword is present and every named regex matches. Live HTTP `verify`
+// endpoints are intentionally unsupported — confessecrets is an offline scanner
+// that redacts values rather than exfiltrating them — so that field is ignored.
+type DetectorConfig struct {
+	// Name labels the detector and appears in findings as "custom:<name>".
+	Name string `yaml:"name"`
+	// Keywords gate the detector: at least one must be present (case-insensitive)
+	// in the value or its key name before the regexes are evaluated. An empty
+	// list means the detector always runs its regexes.
+	Keywords []string `yaml:"keywords"`
+	// Regex maps a name to a pattern; every pattern must match the value for the
+	// detector to fire. A pattern's first capture group, when present, is the
+	// reported secret, otherwise the whole match is.
+	Regex map[string]string `yaml:"regex"`
+	// PrimaryRegexName selects which regex supplies the reported/entropy-checked
+	// value; it defaults to the alphabetically first regex when omitted.
+	PrimaryRegexName string `yaml:"primary_regex_name"`
+	// ExcludeRegexesMatch drops a match whose primary value matches any of these.
+	ExcludeRegexesMatch []string `yaml:"exclude_regexes_match"`
+	// ExcludeWords drops a candidate when any of these appears (case-insensitive)
+	// in the value or its key name.
+	ExcludeWords []string `yaml:"exclude_words"`
+	// Entropy, when > 0, drops matches whose primary value has Shannon entropy
+	// (bits per symbol) below the threshold.
+	Entropy float64 `yaml:"entropy"`
+}
+
+// CustomDetector is a compiled DetectorConfig, ready to match against values.
+// Regexes is kept sorted by name so iteration and primary selection stay
+// deterministic despite Go's randomized map ordering.
+type CustomDetector struct {
+	Name           string
+	Keywords       []string // lowercased
+	Regexes        []NamedRegex
+	Primary        *regexp.Regexp // one of Regexes' patterns; supplies the reported value
+	ExcludeRegexes []*regexp.Regexp
+	ExcludeWords   []string // lowercased
+	MinEntropy     float64
+}
+
+// RuleSet is the compiled detection configuration applied to a file: the
+// name-driven Rules and the value-shape Detectors (custom, trufflehog-style).
+// The two travel together so every file is scanned under one effective config,
+// including repo-local overrides.
+type RuleSet struct {
+	Rules     []Rule
+	Detectors []CustomDetector
+	Filter    *Filter
 }
 
 type Finding struct {
-	File        string `json:"file"`
-	Path        string `json:"path"`
-	NamePath    string `json:"name_path"`
-	ValuePath   string `json:"value_path"`
-	Name        string `json:"name"`
-	Value       string `json:"value"`
-	RawValue    string `json:"raw_value"`
-	ValueSHA256 string `json:"value_sha256"`
-	Reason      string `json:"reason"`
-	Meta        *Meta  `json:"meta,omitempty"`
+	File                string  `json:"file"`
+	Path                string  `json:"path"`
+	NamePath            string  `json:"name_path"`
+	ValuePath           string  `json:"value_path"`
+	Name                string  `json:"name"`
+	Value               string  `json:"value"`
+	RawValue            string  `json:"raw_value"`
+	ValueSHA256         string  `json:"value_sha256"`
+	Entropy             float64 `json:"entropy"`
+	NameValueSimilarity float64 `json:"name_value_similarity"`
+	Reason              string  `json:"reason"`
+	// Filtered is set when the finding matched the config filter but was retained
+	// (via -show-filtered) instead of dropped; FilteredReason holds the expression
+	// that excluded it. Both are omitted from normal, unfiltered findings.
+	Filtered       bool   `json:"filtered,omitempty"`
+	FilteredReason string `json:"filtered_reason,omitempty"`
+	Meta           *Meta  `json:"meta,omitempty"`
 }
 
 // Meta holds optional, value-derived metadata. It is currently populated from

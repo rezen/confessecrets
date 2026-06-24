@@ -30,7 +30,7 @@ var secretQueryParamRe = regexp.MustCompile(
 // Detector parses one file format's bytes (already BOM-stripped) into findings.
 // Each supported format provides a concrete implementation.
 type Detector interface {
-	Detect(file string, data []byte, rules []Rule) []Finding
+	Detect(file string, data []byte, set RuleSet) []Finding
 }
 
 // detectorFor returns the Detector for path's format, or nil if the file type is
@@ -57,17 +57,23 @@ func detectorFor(path string) Detector {
 		return INIDetector{}
 	}
 
+	// Source-code formats are scanned with tree-sitter (loaded at runtime). When
+	// the native libraries are absent, SourceDetector scans nothing.
+	if sourceLangForExt(strings.ToLower(filepath.Ext(path))) != nil {
+		return SourceDetector{}
+	}
+
 	return nil
 }
 
-func detectStructured(file string, root any, rules []Rule) []Finding {
+func detectStructured(file string, root any, set RuleSet) []Finding {
 	var findings []Finding
 
 	var walkNode func(any, string)
 	walkNode = func(node any, path string) {
 		switch v := node.(type) {
 		case map[string]any:
-			for _, rule := range rules {
+			for _, rule := range set.Rules {
 				findings = append(findings, detectInObject(file, v, path, rule)...)
 				findings = append(findings, detectMapKeyValues(file, v, path, rule)...)
 			}
@@ -84,7 +90,7 @@ func detectStructured(file string, root any, rules []Rule) []Finding {
 		case string:
 			// Value scanning: flag any scalar whose shape matches a known
 			// secret token, regardless of its key name.
-			findings = append(findings, detectValuePatterns(file, path, lastSegment(path), v, rules)...)
+			findings = append(findings, detectValuePatterns(file, path, lastSegment(path), v, set)...)
 		}
 	}
 
@@ -112,7 +118,7 @@ func detectInObject(file string, obj map[string]any, basePath string, rule Rule)
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+			if reason == "" && !isLikelySecretValue(name, value, rule) {
 				continue
 			}
 			if reason == "" {
@@ -152,7 +158,7 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 		}
 
 		reason := classifySecretReason(value)
-		if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+		if reason == "" && !isLikelySecretValue(key, value, rule) {
 			continue
 		}
 		if reason == "" {
@@ -175,16 +181,18 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 
 func newFinding(file, path, namePath, valuePath, name, value, reason string) Finding {
 	return Finding{
-		File:        file,
-		Path:        path,
-		NamePath:    namePath,
-		ValuePath:   valuePath,
-		Name:        name,
-		Value:       redact(value),
-		RawValue:    value,
-		ValueSHA256: sha256Hex(value),
-		Reason:      reason,
-		Meta:        parseJWTMeta(value),
+		File:                file,
+		Path:                path,
+		NamePath:            namePath,
+		ValuePath:           valuePath,
+		Name:                name,
+		Value:               redact(value),
+		RawValue:            value,
+		ValueSHA256:         sha256Hex(value),
+		Entropy:             valueEntropy(value),
+		NameValueSimilarity: round2(nameValueSimilarity(name, value)),
+		Reason:              reason,
+		Meta:                parseJWTMeta(value),
 	}
 }
 
@@ -193,11 +201,11 @@ func shouldSkipValue(value string, rule Rule) bool {
 }
 
 // nameSignalsSecret reports whether name indicates a secret under rule: it must
-// match the rule's NameRegex and not match any of its IgnoreNamePatterns. The
-// ignore patterns let benign keys that happen to contain a trigger substring
-// (e.g. "label" or "labelKey" matching the "key" alternative) be excluded.
+// match at least one of the rule's name patterns and not match any of its
+// IgnoreNamePatterns. The ignore patterns let benign keys that happen to contain
+// a trigger substring (e.g. "label" or "labelKey") be excluded.
 func nameSignalsSecret(name string, rule Rule) bool {
-	if !rule.NameRegex.MatchString(name) {
+	if !matchesAnyNameRegex(name, rule) {
 		return false
 	}
 
@@ -208,6 +216,17 @@ func nameSignalsSecret(name string, rule Rule) bool {
 	}
 
 	return true
+}
+
+// matchesAnyNameRegex reports whether name matches any of the rule's compiled
+// name patterns.
+func matchesAnyNameRegex(name string, rule Rule) bool {
+	for _, nr := range rule.NameRegexes {
+		if nr.Regex.MatchString(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldIgnoreValue(value string, rule Rule) bool {
@@ -228,10 +247,24 @@ func shouldIgnoreValue(value string, rule Rule) bool {
 	return false
 }
 
-func isLikelySecretValue(value string, minLen int) bool {
+func isLikelySecretValue(name, value string, rule Rule) bool {
 	value = strings.TrimSpace(value)
 
 	if value == "" {
+		return false
+	}
+
+	// A value that merely restates its key name is a placeholder, not a real
+	// credential: password="password", api_key="your-api-key", token="TOKEN".
+	if valueEchoesName(name, value) {
+		return false
+	}
+
+	// A value highly similar to its key name is a near-echo placeholder
+	// (password="password1", secret="secrets", passwd="passw0rd"). Similarity is
+	// the max of normalized Levenshtein and Jaro-Winkler, the latter rewarding the
+	// shared prefixes typical of these fakes.
+	if rule.MaxNameValueSimilarity > 0 && nameValueSimilarity(name, value) >= rule.MaxNameValueSimilarity {
 		return false
 	}
 
@@ -250,7 +283,13 @@ func isLikelySecretValue(value string, minLen int) bool {
 		return false
 	}
 
-	if len(value) < minLen {
+	if len(value) < rule.MinValueLen {
+		return false
+	}
+
+	// A secret-y key name alone isn't enough: a value with too little variety
+	// (placeholders, repeated characters, simple words) reads as a non-secret.
+	if rule.MinEntropy > 0 && shannonEntropy(normalizeScalar(value)) < rule.MinEntropy {
 		return false
 	}
 
@@ -270,6 +309,104 @@ func isLikelySecretValue(value string, minLen int) bool {
 	}
 
 	return !nonSecrets[lower]
+}
+
+// fillerWords are the placeholder qualifiers that commonly wrap an echoed key
+// name in a fake value, e.g. the "your" of api_key="your-api-key" or the "my" of
+// secret="my-secret". Stripping them lets the value's core be compared to the
+// name.
+var fillerWords = map[string]bool{
+	"your": true, "my": true, "the": true, "a": true, "an": true,
+	"some": true, "example": true, "sample": true, "placeholder": true,
+	"change": true, "changeme": true, "me": true, "real": true,
+	"actual": true, "valid": true, "test": true, "testing": true,
+	"dummy": true, "fake": true, "insert": true, "enter": true,
+	"put": true, "here": true, "value": true, "goes": true,
+	"todo": true, "fixme": true, "xxx": true, "default": true,
+}
+
+// valueEchoesName reports whether value is merely a restatement of the key name,
+// optionally wrapped in placeholder filler words — the signature of an obvious
+// fake credential rather than a real secret (password="password",
+// api_key="your-api-key", token="TOKEN", secret="<my-secret>"). Comparison is
+// word-based and case-insensitive and ignores separators and camelCase, so
+// "apiKey" and "your-api-key" both reduce to "apikey".
+func valueEchoesName(name, value string) bool {
+	nameKey := strings.Join(identifierWords(name), "")
+	if nameKey == "" {
+		return false
+	}
+
+	var core []string
+	for _, w := range identifierWords(value) {
+		if !fillerWords[w] {
+			core = append(core, w)
+		}
+	}
+	if len(core) == 0 {
+		return false
+	}
+
+	return strings.Join(core, "") == nameKey
+}
+
+// levenshtein returns the edit distance between a and b: the minimum number of
+// single-rune insertions, deletions, or substitutions to turn one into the other.
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+
+	prev := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+
+	return prev[len(rb)]
+}
+
+// identifierWords splits an identifier into lowercase alphanumeric words,
+// breaking on non-alphanumeric separators and camelCase boundaries, so "apiKey",
+// "api_key", and "API-KEY" all yield comparable word lists.
+func identifierWords(s string) []string {
+	var words []string
+	var cur []rune
+
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+
+	var prev rune
+	for _, r := range s {
+		switch {
+		case !unicode.IsLetter(r) && !unicode.IsDigit(r):
+			flush()
+		case unicode.IsUpper(r) && unicode.IsLower(prev):
+			// camelCase boundary: fooBar -> foo|Bar.
+			flush()
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+		prev = r
+	}
+	flush()
+
+	return words
 }
 
 func classifySecretReason(value string) string {

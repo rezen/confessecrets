@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -55,34 +56,105 @@ func matchValuePattern(value string) string {
 	return ""
 }
 
-// detectValuePatterns scans a single value against the gitleaks patterns,
-// independent of the key name. It honors the configured value-ignore
-// prefixes/patterns (so suppressions still apply) and emits at most one finding,
-// tagged with reason "gitleaks:<rule-id>".
-func detectValuePatterns(file, path, name, value string, rules []Rule) []Finding {
+// detectValuePatterns scans a single value against the built-in gitleaks
+// patterns and any configured custom (trufflehog-style) detectors, independent
+// of the key name. It honors the configured value-ignore prefixes/patterns (so
+// suppressions still apply) and emits at most one finding. The built-in patterns
+// take precedence and are tagged "gitleaks:<rule-id>"; a custom detector match
+// is tagged "custom:<detector-name>".
+func detectValuePatterns(file, path, name, value string, set RuleSet) []Finding {
 	value = normalizeScalar(value)
 	if value == "" {
 		return nil
 	}
 
-	if valueSuppressed(value, rules) {
+	if valueSuppressed(value, set.Rules) {
 		return nil
 	}
 
-	id := matchValuePattern(value)
-	if id == "" {
-		return nil
+	if id := matchValuePattern(value); id != "" {
+		return []Finding{newFinding(
+			file,
+			path,
+			"value_pattern",
+			"value_pattern",
+			name,
+			value,
+			"gitleaks:"+id,
+		)}
 	}
 
-	return []Finding{newFinding(
-		file,
-		path,
-		"value_pattern",
-		"value_pattern",
-		name,
-		value,
-		"gitleaks:"+id,
-	)}
+	for _, d := range set.Detectors {
+		if _, ok := d.match(value, name); ok {
+			return []Finding{newFinding(
+				file,
+				path,
+				"value_pattern",
+				"value_pattern",
+				name,
+				value,
+				"custom:"+d.Name,
+			)}
+		}
+	}
+
+	if reason := matchHighEntropy(value, set.Rules); reason != "" {
+		return []Finding{newFinding(
+			file,
+			path,
+			"value_pattern",
+			"value_pattern",
+			name,
+			value,
+			reason,
+		)}
+	}
+
+	return nil
+}
+
+// maxHighEntropyLen bounds the generic high-entropy detector to token-sized
+// values. Real opaque secrets are short; long strings with many distinct symbols
+// (source code, regexes, JSON blobs, prose) have naturally high per-symbol
+// entropy and would otherwise be flagged wholesale.
+const maxHighEntropyLen = 200
+
+// matchHighEntropy reports a finding reason when value's Shannon entropy meets a
+// rule's configured high_entropy_threshold, flagging opaque, high-randomness
+// strings whose key name gives no hint they are secret. It restricts itself to
+// single token-like values (no whitespace, bounded length, not natural language)
+// so source code and prose don't trip the threshold, and embeds the measured
+// entropy in the reason (e.g. "high_entropy:4.73"). The first rule with a
+// threshold the value clears wins.
+func matchHighEntropy(value string, rules []Rule) string {
+	value = normalizeScalar(value)
+	if value == "" {
+		return ""
+	}
+
+	// A genuine opaque token is one whitespace-free run of bounded length; longer
+	// or space-bearing values are code/prose whose entropy means nothing here.
+	if len(value) > maxHighEntropyLen || strings.ContainsAny(value, " \t\r\n") {
+		return ""
+	}
+
+	for _, rule := range rules {
+		if rule.HighEntropyThreshold <= 0 {
+			continue
+		}
+		if len(value) < rule.MinValueLen {
+			continue
+		}
+		if looksLikeNaturalLanguage(value) {
+			continue
+		}
+
+		if e := shannonEntropy(value); e >= rule.HighEntropyThreshold {
+			return fmt.Sprintf("high_entropy:%.2f", e)
+		}
+	}
+
+	return ""
 }
 
 // valueSuppressed reports whether value is excluded by any rule's ignore

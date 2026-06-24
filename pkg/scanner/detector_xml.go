@@ -9,11 +9,11 @@ import (
 // XMLDetector handles .xml files via streaming token scanning.
 type XMLDetector struct{}
 
-func (XMLDetector) Detect(file string, data []byte, rules []Rule) []Finding {
-	return detectXML(file, data, rules)
+func (XMLDetector) Detect(file string, data []byte, set RuleSet) []Finding {
+	return detectXML(file, data, set)
 }
 
-func detectXML(file string, data []byte, rules []Rule) []Finding {
+func detectXML(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
 
 	dec := xml.NewDecoder(bytes.NewReader(data))
@@ -46,11 +46,11 @@ func detectXML(file string, data []byte, rules []Rule) []Finding {
 		switch t := tok.(type) {
 		case xml.StartElement:
 			stack = append(stack, &frame{name: t.Name.Local})
-			findings = append(findings, detectXMLAttrs(file, pathOf(), t.Attr, rules)...)
-			findings = append(findings, detectXMLAttrReasons(file, pathOf(), t.Attr, rules)...)
+			findings = append(findings, detectXMLAttrs(file, pathOf(), t.Attr, set.Rules)...)
+			findings = append(findings, detectXMLAttrReasons(file, pathOf(), t.Attr, set.Rules)...)
 
 			for _, attr := range t.Attr {
-				findings = append(findings, detectValuePatterns(file, pathOf(), attr.Name.Local, attr.Value, rules)...)
+				findings = append(findings, detectValuePatterns(file, pathOf(), attr.Name.Local, attr.Value, set)...)
 			}
 
 		case xml.CharData:
@@ -72,9 +72,9 @@ func detectXML(file string, data []byte, rules []Rule) []Finding {
 				continue
 			}
 
-			findings = append(findings, detectXMLElementText(file, path, f.name, text, rules)...)
-			findings = append(findings, detectXMLTextReason(file, path, f.name, text, rules)...)
-			findings = append(findings, detectValuePatterns(file, path, f.name, text, rules)...)
+			findings = append(findings, detectXMLElementText(file, path, f.name, text, set.Rules)...)
+			findings = append(findings, detectXMLTextReason(file, path, f.name, text, set.Rules)...)
+			findings = append(findings, detectValuePatterns(file, path, f.name, text, set)...)
 		}
 	}
 
@@ -94,7 +94,7 @@ func detectXMLElementText(file, path, elem, text string, rules []Rule) []Finding
 		}
 
 		reason := classifySecretReason(text)
-		if reason == "" && !isLikelySecretValue(text, rule.MinValueLen) {
+		if reason == "" && !isLikelySecretValue(elem, text, rule) {
 			continue
 		}
 		if reason == "" {
@@ -221,7 +221,7 @@ func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+			if reason == "" && !isLikelySecretValue(attr.Name.Local, value, rule) {
 				continue
 			}
 			if reason == "" {
@@ -258,7 +258,7 @@ func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding
 				}
 
 				reason := classifySecretReason(value)
-				if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+				if reason == "" && !isLikelySecretValue(name, value, rule) {
 					continue
 				}
 				if reason == "" {

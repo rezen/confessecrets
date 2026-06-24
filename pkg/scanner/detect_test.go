@@ -31,7 +31,7 @@ func testRules(t *testing.T) []Rule {
 	rules, err := CompileRules([]RuleConfig{{
 		NamePaths:   []string{"name", "key", "field"},
 		ValuePaths:  []string{"value", "val", "secret"},
-		NameRegex:   `(?i)(secret|token|api[_-]?key|password|passwd|pwd|credential|key|auth)`,
+		NameRegexes: []NameRegexEntry{{Regex: `(?i)(secret|token|api[_-]?key|password|passwd|pwd|credential|key|auth)`}},
 		MinValueLen: 8,
 	}})
 	if err != nil {
@@ -80,6 +80,7 @@ func TestDetectorFor(t *testing.T) {
 
 func TestIsLikelySecretValue(t *testing.T) {
 	const minLen = 8
+	rule := Rule{MinValueLen: minLen}
 
 	tests := []struct {
 		name  string
@@ -140,8 +141,168 @@ func TestIsLikelySecretValue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isLikelySecretValue(tt.value, minLen); got != tt.want {
+			if got := isLikelySecretValue("opaque", tt.value, rule); got != tt.want {
 				t.Errorf("isLikelySecretValue(%q, %d) = %v, want %v", tt.value, minLen, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsLikelySecretValueEntropyGate covers the rule-configured MinEntropy gate:
+// once set, a low-variety value that clears the length and wordlist checks is
+// still dropped, while a high-variety value of the same length passes.
+func TestIsLikelySecretValueEntropyGate(t *testing.T) {
+	const lowVariety = "abababababababab"   // 1 bit/symbol
+	const highVariety = "Ab3Df9Gh2Jk5Lm8Qp" // ~4 bits/symbol
+
+	// Without a gate both pass (long enough, not placeholders).
+	open := Rule{MinValueLen: 8}
+	if !isLikelySecretValue("token", lowVariety, open) {
+		t.Errorf("ungated low-variety value should pass")
+	}
+
+	// With a gate the low-variety value is rejected, the high-variety one kept.
+	gated := Rule{MinValueLen: 8, MinEntropy: 3.0}
+	if isLikelySecretValue("token", lowVariety, gated) {
+		t.Errorf("gated low-variety value should be rejected")
+	}
+	if !isLikelySecretValue("token", highVariety, gated) {
+		t.Errorf("gated high-variety value should pass")
+	}
+
+	// A value carrying a definite secret reason bypasses the gate even though it
+	// is low-variety, because classifySecretReason short-circuits first.
+	if !isLikelySecretValue("token", "-----BEGIN RSA PRIVATE KEY-----", gated) {
+		t.Errorf("definite-secret value should bypass the entropy gate")
+	}
+}
+
+// TestNameValueSimilarity covers the similarity score reported with findings: the
+// max of normalized Levenshtein and Jaro-Winkler over the lowercased, unquoted
+// inputs.
+func TestNameValueSimilarity(t *testing.T) {
+	// Identical (case-insensitive, value unquoted) scores exactly 1.
+	for _, tc := range []struct{ name, value string }{
+		{"password", "password"},
+		{"token", "TOKEN"},
+		{"secret", `"secret"`},
+	} {
+		if got := nameValueSimilarity(tc.name, tc.value); got != 1 {
+			t.Errorf("nameValueSimilarity(%q, %q) = %v, want 1", tc.name, tc.value, got)
+		}
+	}
+
+	// Prefix-weighted near-echoes score high (Jaro-Winkler boost).
+	for _, tc := range []struct{ name, value string }{
+		{"secret", "secrets"},
+		{"passwd", "passw0rd"},
+		{"password", "password1"},
+	} {
+		if got := nameValueSimilarity(tc.name, tc.value); got < 0.85 {
+			t.Errorf("nameValueSimilarity(%q, %q) = %v, want >= 0.85", tc.name, tc.value, got)
+		}
+	}
+
+	// A genuine opaque secret scores low.
+	if got := nameValueSimilarity("api_key", "Xk9$mQ2vLp7wRt4z"); got >= 0.85 {
+		t.Errorf("nameValueSimilarity(opaque) = %v, want < 0.85", got)
+	}
+
+	// Score is bounded to [0,1].
+	for _, tc := range []struct{ name, value string }{
+		{"a", "zzzzzzzz"}, {"", "anything"}, {"key", ""},
+	} {
+		if got := nameValueSimilarity(tc.name, tc.value); got < 0 || got > 1 {
+			t.Errorf("nameValueSimilarity(%q, %q) = %v, out of [0,1]", tc.name, tc.value, got)
+		}
+	}
+}
+
+// TestIsLikelySecretValueSimilarityGate covers the configurable
+// max_name_value_similarity suppression of near-echo placeholders.
+func TestIsLikelySecretValueSimilarityGate(t *testing.T) {
+	gated := Rule{MinValueLen: 8, MaxNameValueSimilarity: 0.85}
+
+	// Near-echo: "password1" is highly similar to "password" -> dropped.
+	if isLikelySecretValue("password", "password1", gated) {
+		t.Errorf("near-echo value should be dropped by the similarity gate")
+	}
+
+	// A real secret is dissimilar from its key name -> kept.
+	if !isLikelySecretValue("password", "Xk9$mQ2vLp7wRt4z", gated) {
+		t.Errorf("dissimilar value should pass the similarity gate")
+	}
+
+	// Without the gate the near-echo would survive.
+	open := Rule{MinValueLen: 8}
+	if !isLikelySecretValue("password", "password1", open) {
+		t.Errorf("near-echo should pass when the similarity gate is disabled")
+	}
+}
+
+// TestValueEchoesName covers suppression of placeholder values that merely
+// restate their key name.
+func TestValueEchoesName(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		// Echoes: exact, case-folded, separator/camelCase-normalized, filler-wrapped.
+		{"password", "password", true},
+		{"token", "TOKEN", true},
+		{"api_key", "your-api-key", true},
+		{"apiKey", "your_api_key", true},
+		{"api-key", "API_KEY", true},
+		{"secret", "<my-secret>", true},
+		{"clientSecret", "your-client-secret", true},
+		{"access_key", "example access key", true},
+
+		// Not echoes: real-ish values that merely contain or extend the name.
+		{"password", "hunter2", false},
+		{"api_key", "AKIAIOSFODNN7EXAMPLE", false},
+		{"api_key", "api-key-prod-12345", false},
+		{"password", "password123", false},
+		{"secret", "", false},
+		{"", "anything", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
+			if got := valueEchoesName(tt.name, tt.value); got != tt.want {
+				t.Errorf("valueEchoesName(%q, %q) = %v, want %v", tt.name, tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchHighEntropy covers the generic, name-independent high-entropy
+// detector wired into value scanning.
+func TestMatchHighEntropy(t *testing.T) {
+	const random = "Xa9Kd2Lp7Qm4Zr8Wb3Nc6Vt1Hf5Jg0Ys" // ~5 bits/symbol
+
+	tests := []struct {
+		name      string
+		value     string
+		rules     []Rule
+		wantMatch bool
+	}{
+		{"disabled when threshold unset", random, []Rule{{MinValueLen: 8}}, false},
+		{"high entropy flagged", random, []Rule{{MinValueLen: 8, HighEntropyThreshold: 4.0}}, true},
+		{"low entropy not flagged", "abababababababab", []Rule{{MinValueLen: 8, HighEntropyThreshold: 4.0}}, false},
+		{"whitespace-bearing value skipped", random + " " + random, []Rule{{MinValueLen: 8, HighEntropyThreshold: 4.0}}, false},
+		{"over-long value skipped", strings.Repeat(random, 10), []Rule{{MinValueLen: 8, HighEntropyThreshold: 4.0}}, false},
+		{"too short skipped", "Xa9Kd", []Rule{{MinValueLen: 8, HighEntropyThreshold: 1.0}}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := matchHighEntropy(tt.value, tt.rules)
+			if got := reason != ""; got != tt.wantMatch {
+				t.Fatalf("matchHighEntropy(%q) = %q, want match=%v", tt.value, reason, tt.wantMatch)
+			}
+			if tt.wantMatch && !strings.HasPrefix(reason, "high_entropy:") {
+				t.Errorf("reason = %q, want a high_entropy: prefix", reason)
 			}
 		})
 	}
@@ -279,7 +440,7 @@ func TestLooksLikeNaturalLanguage(t *testing.T) {
 
 func TestNameSignalsSecret(t *testing.T) {
 	rules, err := CompileRules([]RuleConfig{{
-		NameRegex:          `(?i)(secret|token|api[_-]?key|password|key|auth)`,
+		NameRegexes:        []NameRegexEntry{{Regex: `(?i)(secret|token|api[_-]?key|password|key|auth)`}},
 		IgnoreNamePatterns: []string{`(?i)label`},
 	}})
 	if err != nil {
@@ -343,7 +504,7 @@ func TestDetectValuePatternsRegardlessOfName(t *testing.T) {
 		"note=nothing to see here at all",
 	}, "\n")
 
-	findings := detectEnvLines("app.env", []byte(content), rules)
+	findings := detectEnvLines("app.env", []byte(content), RuleSet{Rules: rules})
 
 	var got *Finding
 	for i := range findings {
@@ -365,14 +526,14 @@ func TestDetectValuePatternsRegardlessOfName(t *testing.T) {
 
 func TestDetectValuePatternsSuppressed(t *testing.T) {
 	rules, err := CompileRules([]RuleConfig{{
-		NameRegex:           `(?i)secret`,
+		NameRegexes:         []NameRegexEntry{{Regex: `(?i)secret`}},
 		IgnoreValuePrefixes: []string{"AKIA"},
 	}})
 	if err != nil {
 		t.Fatalf("CompileRules: %v", err)
 	}
 
-	findings := detectValuePatterns("f", "$.x", "x", "AKIAIOSFODNN7EXAMPLE", rules)
+	findings := detectValuePatterns("f", "$.x", "x", "AKIAIOSFODNN7EXAMPLE", RuleSet{Rules: rules})
 	if len(findings) != 0 {
 		t.Errorf("ignore prefix should suppress value-pattern finding, got %+v", findings)
 	}
@@ -380,7 +541,7 @@ func TestDetectValuePatternsSuppressed(t *testing.T) {
 
 func TestDetectEnvLinesIgnoresName(t *testing.T) {
 	rules, err := CompileRules([]RuleConfig{{
-		NameRegex:          `(?i)(secret|token|api[_-]?key|password|key|auth)`,
+		NameRegexes:        []NameRegexEntry{{Regex: `(?i)(secret|token|api[_-]?key|password|key|auth)`}},
 		IgnoreNamePatterns: []string{`(?i)label`},
 		MinValueLen:        8,
 	}})
@@ -395,7 +556,7 @@ func TestDetectEnvLinesIgnoresName(t *testing.T) {
 		"LABEL_KEY=just-a-plain-label", // matches via "key" but ignored by "label"
 	}, "\n")
 
-	findings := detectEnvLines("app.env", []byte(content), rules)
+	findings := detectEnvLines("app.env", []byte(content), RuleSet{Rules: rules})
 
 	names := keySet(findings)
 	if _, ok := names["API_KEY"]; !ok {
@@ -419,7 +580,7 @@ func TestDetectEnvLines(t *testing.T) {
 		"AUTH_TOKEN=abcd12345 # inline comment", // inline comment stripped
 	}, "\n")
 
-	findings := detectEnvLines("app.env", []byte(content), rules)
+	findings := detectEnvLines("app.env", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	want := map[string]string{
@@ -453,7 +614,7 @@ func TestDotenvDetectorStructured(t *testing.T) {
 		"AUTH_TOKEN=abcd12345 # inline comment", // inline comment stripped by godotenv
 	}, "\n")
 
-	findings := DotenvDetector{}.Detect("app.env", []byte(content), rules)
+	findings := DotenvDetector{}.Detect("app.env", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	want := map[string]string{
@@ -487,7 +648,7 @@ func TestDotenvDetectorFallback(t *testing.T) {
 		t.Skip("godotenv accepted the input; fallback not exercised")
 	}
 
-	findings := DotenvDetector{}.Detect("app.env", []byte(content), rules)
+	findings := DotenvDetector{}.Detect("app.env", []byte(content), RuleSet{Rules: rules})
 	if keySet(findings)["API_KEY"] != "sk_live_8Fh2kLmQ9zXc4Tg" {
 		t.Fatalf("fallback line scan missed secret: %+v", findings)
 	}
@@ -508,7 +669,7 @@ func TestDetectPropertiesLines(t *testing.T) {
 		`jdbc.secret=user\=admin&pwd\=longsecretvalue`, // escaped '=' inside value
 	}, "\n")
 
-	findings := detectPropertiesLines("app.properties", []byte(content), rules)
+	findings := detectPropertiesLines("app.properties", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	want := map[string]string{
@@ -543,7 +704,7 @@ func TestPropertiesDetectorStructured(t *testing.T) {
 		"vault.secret=${VAULT_PW}", // expansion disabled -> stays literal, skipped by prefix
 	}, "\n")
 
-	findings := PropertiesDetector{}.Detect("app.properties", []byte(content), rules)
+	findings := PropertiesDetector{}.Detect("app.properties", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	if got["db.password"] != "hunter2secret" {
@@ -574,7 +735,7 @@ func TestPropertiesDetectorFallback(t *testing.T) {
 		t.Skip("parser accepted the input; fallback not exercised")
 	}
 
-	findings := PropertiesDetector{}.Detect("app.properties", []byte(content), rules)
+	findings := PropertiesDetector{}.Detect("app.properties", []byte(content), RuleSet{Rules: rules})
 	if keySet(findings)["api.secret"] != "abcd1234efgh5678" {
 		t.Fatalf("fallback line scan missed secret: %+v", findings)
 	}
@@ -591,7 +752,7 @@ func TestDetectPropertiesLineContinuation(t *testing.T) {
 		"  ijkl9012",
 	}, "\n")
 
-	findings := detectPropertiesLines("app.properties", []byte(content), rules)
+	findings := detectPropertiesLines("app.properties", []byte(content), RuleSet{Rules: rules})
 
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
@@ -628,7 +789,7 @@ func TestDetectINILines(t *testing.T) {
 		"note = hi",                         // name matches but value too short
 	}, "\n")
 
-	findings := detectINILines("app.ini", []byte(content), rules)
+	findings := detectINILines("app.ini", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	want := map[string]string{
@@ -656,7 +817,7 @@ func TestDetectINISectionInPath(t *testing.T) {
 		"secret = abcd1234efgh5678",
 	}, "\n")
 
-	findings := detectINILines("app.ini", []byte(content), rules)
+	findings := detectINILines("app.ini", []byte(content), RuleSet{Rules: rules})
 
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
@@ -685,7 +846,7 @@ func TestINIDetectorStructured(t *testing.T) {
 		`api_token = "sk_live_8Fh2kLmQ9zXc4Tg"`,
 	}, "\n")
 
-	findings := INIDetector{}.Detect("app.ini", []byte(content), rules)
+	findings := INIDetector{}.Detect("app.ini", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	if got["password"] != "hunter2secret" || got["api_token"] != "sk_live_8Fh2kLmQ9zXc4Tg" {
@@ -714,7 +875,7 @@ func TestINIDetectorFallback(t *testing.T) {
 		t.Skip("go-ini accepted the input; fallback not exercised")
 	}
 
-	findings := INIDetector{}.Detect("app.ini", []byte(content), rules)
+	findings := INIDetector{}.Detect("app.ini", []byte(content), RuleSet{Rules: rules})
 	if keySet(findings)["secret"] != "abcd1234efgh5678" {
 		t.Fatalf("fallback line scan missed secret: %+v", findings)
 	}
@@ -732,7 +893,7 @@ func TestDetectXML(t *testing.T) {
   <note>just a friendly note here</note>
 </config>`
 
-	findings := detectXML("app.xml", []byte(content), rules)
+	findings := detectXML("app.xml", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	if got["password"] != "hunter2secret" && got["password"] != "sup3rs3cretvalue" {
@@ -768,7 +929,7 @@ func TestDetectDotNetConfig(t *testing.T) {
   </appSettings>
 </configuration>`
 
-	findings := detectXML("web.config", []byte(content), rules)
+	findings := detectXML("web.config", []byte(content), RuleSet{Rules: rules})
 	got := keySet(findings)
 
 	if _, ok := got["ApiKeySecret"]; !ok {
@@ -796,7 +957,7 @@ func TestDetectXMLAttrReasons(t *testing.T) {
   </connectionStrings>
 </configuration>`
 
-	findings := detectXML("web.config", []byte(content), rules)
+	findings := detectXML("web.config", []byte(content), RuleSet{Rules: rules})
 
 	var flagged bool
 	for _, f := range findings {
@@ -824,7 +985,7 @@ func TestDetectXMLTextReason(t *testing.T) {
   <region>Server=metrics;Trusted_Connection=True;</region>
 </settings>`
 
-	findings := detectXML("app.config", []byte(content), rules)
+	findings := detectXML("app.config", []byte(content), RuleSet{Rules: rules})
 
 	var flagged bool
 	for _, f := range findings {

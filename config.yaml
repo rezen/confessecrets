@@ -10,6 +10,18 @@ files:
     - "**/*.config"
     - "**/*.properties"
     - "**/*.ini"
+    # Source code (scanned with tree-sitter; requires built grammars)
+    - "**/*.py"
+    - "**/*.pyi"
+    - "**/*.js"
+    - "**/*.jsx"
+    - "**/*.cjs"
+    - "**/*.mjs"
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.go"
+    - "**/*.java"
+    - "**/*.cs"
     -
   deny:
     - "**/cerlet.ini"
@@ -33,9 +45,43 @@ rules:
       - val
       - secret
       - env.value
-    name_regex: '(?i)(secret|token|api[_-]?key|password|passwd|pwd|credential|private[_-]?key|access[_-]?key|client[_-]?secret|signing[_-]?key|auth)'
+    # A name matching ANY entry signals a secret. Each entry is either a bare
+    # regex string or a {name, regex} mapping (the name is a label for the rule).
+    name_regexes:
+      # Case-insensitive secret-y key names, including a generic *_key.
+      - '(?i)(secret|token|api[_-]?key|password|passwd|pwd|credential|private[_-]?key|access[_-]?key|client[_-]?secret|signing[_-]?key|[_-]key|auth)'
+      # Case-SENSITIVE camelCase key (functionKey, accessKey) — the trailing
+      # class excludes "monkey"/"keyboard"/"myKeyboard".
+      - name: camelcase-key
+        regex: '(?-i:[a-z0-9]Key([A-Z0-9_]|$))'
 
     min_value_len: 8
+
+    # Entropy gate for name-driven findings (Shannon bits/symbol). When > 0, a
+    # value flagged only because its key name looks secret-y must clear this
+    # threshold, dropping repetitive placeholders ("aaaaaaaa", "xxxxxxxx").
+    # Values that carry a definite secret reason (JWT, private key, URL
+    # credentials) bypass the gate. Kept low so real low-variety passwords are
+    # not lost. Set to 0 to disable.
+    min_entropy: 2.0
+
+    # Generic high-entropy detector (Shannon bits/symbol). When > 0, any opaque
+    # token-like value (whitespace-free, <=200 chars) whose entropy meets this
+    # threshold is flagged regardless of key name, catching secrets the
+    # name/shape rules miss. Reported as "high_entropy:<measured>". Disabled by
+    # default: it is noisy when scanning source code, where many string literals
+    # (regexes, ids, encoded blobs) sit near the secret range. Enable it (e.g.
+    # 4.5) for config-only scans (`-scan config`) where it pays off. Hex
+    # digests/UUIDs sit near ~4.0, so keep the threshold above that.
+    high_entropy_threshold: 0
+
+    # Maximum name/value similarity (0..1) a name-driven finding may have before
+    # it is dropped as a near-echo placeholder. Similarity is the max of
+    # normalized Levenshtein and Jaro-Winkler, so prefix-weighted mutations
+    # (password="password1", secret="secrets", passwd="passw0rd") score high and
+    # are suppressed, while real opaque secrets score low and survive. Kept high
+    # to avoid dropping genuine secrets. Set to 0 to disable.
+    max_name_value_similarity: 0.85
 
     # Names matching any of these patterns are never treated as secrets, even if
     # they match name_regex (e.g. "label"/"labelKey" matching the "key" alternative).
@@ -83,3 +129,41 @@ rules:
       - '^ENC\[.*\]$'
       - '^arn:aws:secretsmanager:'
       - '^projects\/[^\/]+\/secrets\/'
+
+# Custom value-pattern detectors (trufflehog-style). Each detector flags a value
+# by its shape alone, regardless of the surrounding key name, complementing the
+# built-in gitleaks patterns. A detector fires when at least one keyword is
+# present and every named regex matches; matches are tagged "custom:<name>".
+# Schema: https://trufflesecurity.com/docs/custom-detectors
+detectors:
+  - name: acme-api-key
+    # At least one keyword must appear in the value or its key name before the
+    # regexes run (case-insensitive). Omit for an always-on detector.
+    keywords:
+      - acme
+    # Every named regex must match. A first capture group, when present, is the
+    # reported secret; otherwise the whole match is.
+    regex:
+      key: 'AKME-[0-9a-f]{32}'
+    # Optional: when several regexes are defined, pick which one's match is
+    # reported (defaults to the alphabetically first).
+    # primary_regex_name: key
+    # Optional: drop matches whose value matches any of these (false positives).
+    exclude_regexes_match:
+      - '^AKME-0+$'
+    # Optional: drop a candidate if any of these words is present.
+    exclude_words:
+      - example
+    # Optional: require a minimum Shannon entropy (bits/symbol) of the match.
+    entropy: 3.0
+
+# Optional global filter (expr-lang, https://expr-lang.org). When the expression
+# is true for a finding, that finding is dropped — a flexible way to suppress
+# whole classes of false positives by their computed properties. Available
+# variables: entropy, name_value_similarity, value_length (numbers); name, value,
+# reason, file, path, name_path, value_path (strings). expr built-ins such as
+# matches/contains/startsWith are available. Leave empty to disable.
+#
+# Example: drop low-entropy values whose name closely echoes the value.
+# filter: 'entropy <= 4 && name_value_similarity > 0.65'
+filter: 'entropy <= 4 && name_value_similarity > 0.65'

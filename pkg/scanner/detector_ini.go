@@ -12,13 +12,13 @@ import (
 // don't parse cleanly, mirroring the JSON/YAML detectors.
 type INIDetector struct{}
 
-func (INIDetector) Detect(file string, data []byte, rules []Rule) []Finding {
+func (INIDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 	root, err := parseINI(data)
 	if err != nil {
-		return detectINILines(file, data, rules)
+		return detectINILines(file, data, set)
 	}
 
-	return detectStructured(file, root, rules)
+	return detectStructured(file, root, set)
 }
 
 // parseINI loads INI bytes into a nested map: the default section's keys sit at
@@ -50,7 +50,7 @@ func parseINI(data []byte) (map[string]any, error) {
 // detectINILines scans an INI-style file. It tracks the current [section] for
 // context, treats ';' and '#' as comment markers, and splits each entry on the
 // first '=' or ':'. Surrounding quotes on a value are stripped.
-func detectINILines(file string, data []byte, rules []Rule) []Finding {
+func detectINILines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
 	lines := strings.Split(string(data), "\n")
 	section := ""
@@ -74,7 +74,7 @@ func detectINILines(file string, data []byte, rules []Rule) []Finding {
 
 		path := iniLocation(section, i+1)
 
-		for _, rule := range rules {
+		for _, rule := range set.Rules {
 			if !nameSignalsSecret(key, rule) {
 				continue
 			}
@@ -84,7 +84,7 @@ func detectINILines(file string, data []byte, rules []Rule) []Finding {
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+			if reason == "" && !isLikelySecretValue(key, value, rule) {
 				continue
 			}
 			if reason == "" {
@@ -102,7 +102,7 @@ func detectINILines(file string, data []byte, rules []Rule) []Finding {
 			))
 		}
 
-		findings = append(findings, detectValuePatterns(file, path, key, value, rules)...)
+		findings = append(findings, detectValuePatterns(file, path, key, value, set)...)
 	}
 
 	return findings

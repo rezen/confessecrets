@@ -15,7 +15,8 @@ files:
 rules:
   - name_paths: [name]
     value_paths: [value]
-    name_regex: '(?i)secret'
+    name_regexes:
+      - '(?i)secret'
     min_value_len: 1
 `
 
@@ -50,21 +51,21 @@ func TestIsRepoRoot(t *testing.T) {
 	}
 }
 
-func baseConfigAndRules(t *testing.T) (Config, []Rule) {
+func baseConfigAndRules(t *testing.T) (Config, RuleSet) {
 	t.Helper()
 	base := Config{
 		Files: FilePolicy{Allow: []string{"**/*.yaml"}},
 		Rules: []RuleConfig{{
-			NamePaths:  []string{"name"},
-			ValuePaths: []string{"value"},
-			NameRegex:  "(?i)never-matches-anything-xyzzy",
+			NamePaths:   []string{"name"},
+			ValuePaths:  []string{"value"},
+			NameRegexes: []NameRegexEntry{{Regex: "(?i)never-matches-anything-xyzzy"}},
 		}},
 	}
-	rules, err := CompileRules(base.Rules)
+	set, err := CompileConfig(base)
 	if err != nil {
-		t.Fatalf("CompileRules: %v", err)
+		t.Fatalf("CompileConfig: %v", err)
 	}
-	return base, rules
+	return base, set
 }
 
 func TestConfigResolverRespectsRepoConfig(t *testing.T) {
@@ -73,20 +74,20 @@ func TestConfigResolverRespectsRepoConfig(t *testing.T) {
 	markRepoRoot(t, repo)
 	writeFile(t, filepath.Join(repo, RepoConfigNames[0]), repoLocalConfig)
 
-	base, baseRules := baseConfigAndRules(t)
-	r := NewConfigResolver(base, baseRules, true, root)
+	base, baseSet := baseConfigAndRules(t)
+	r := NewConfigResolver(base, baseSet, true, root)
 
 	// A file inside repoA must resolve to repoA's local config (its rule matches
 	// "secret", unlike the base rule).
-	_, rules := r.Resolve(filepath.Join(repo, "app.yaml"))
-	if len(rules) != 1 || !rules[0].NameRegex.MatchString("secret") {
-		t.Fatalf("file inside repo did not get repo-local rules: %+v", rules)
+	_, set := r.Resolve(filepath.Join(repo, "app.yaml"))
+	if len(set.Rules) != 1 || !matchesAnyNameRegex("secret", set.Rules[0]) {
+		t.Fatalf("file inside repo did not get repo-local rules: %+v", set.Rules)
 	}
 
 	// A file outside any repo uses the base config.
-	_, rules = r.Resolve(filepath.Join(root, "top.yaml"))
-	if len(rules) != 1 || rules[0].NameRegex.MatchString("secret") {
-		t.Errorf("file outside repo did not get base rules: %+v", rules)
+	_, set = r.Resolve(filepath.Join(root, "top.yaml"))
+	if len(set.Rules) != 1 || matchesAnyNameRegex("secret", set.Rules[0]) {
+		t.Errorf("file outside repo did not get base rules: %+v", set.Rules)
 	}
 }
 
@@ -96,12 +97,12 @@ func TestConfigResolverDisabledIgnoresRepoConfig(t *testing.T) {
 	markRepoRoot(t, repo)
 	writeFile(t, filepath.Join(repo, RepoConfigNames[0]), repoLocalConfig)
 
-	base, baseRules := baseConfigAndRules(t)
-	r := NewConfigResolver(base, baseRules, false, root)
+	base, baseSet := baseConfigAndRules(t)
+	r := NewConfigResolver(base, baseSet, false, root)
 
-	_, rules := r.Resolve(filepath.Join(repo, "app.yaml"))
-	if rules[0].NameRegex.MatchString("secret") {
-		t.Errorf("repo config was honored despite being disabled: %+v", rules)
+	_, set := r.Resolve(filepath.Join(repo, "app.yaml"))
+	if matchesAnyNameRegex("secret", set.Rules[0]) {
+		t.Errorf("repo config was honored despite being disabled: %+v", set.Rules)
 	}
 }
 
@@ -117,11 +118,11 @@ func TestConfigResolverRepoWithoutConfigUsesBase(t *testing.T) {
 	inner := filepath.Join(outer, "vendor", "inner")
 	markRepoRoot(t, inner)
 
-	base, baseRules := baseConfigAndRules(t)
-	r := NewConfigResolver(base, baseRules, true, root)
+	base, baseSet := baseConfigAndRules(t)
+	r := NewConfigResolver(base, baseSet, true, root)
 
-	_, rules := r.Resolve(filepath.Join(inner, "app.yaml"))
-	if rules[0].NameRegex.MatchString("secret") {
-		t.Errorf("nested repo without config inherited outer repo config: %+v", rules)
+	_, set := r.Resolve(filepath.Join(inner, "app.yaml"))
+	if matchesAnyNameRegex("secret", set.Rules[0]) {
+		t.Errorf("nested repo without config inherited outer repo config: %+v", set.Rules)
 	}
 }

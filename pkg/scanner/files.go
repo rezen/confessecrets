@@ -37,7 +37,7 @@ func CompileRules(configs []RuleConfig) ([]Rule, error) {
 	var rules []Rule
 
 	for _, rc := range configs {
-		nameRe, err := regexp.Compile(rc.NameRegex)
+		nameRegexes, err := compileNameRegexes(rc)
 		if err != nil {
 			return nil, err
 		}
@@ -65,17 +65,57 @@ func CompileRules(configs []RuleConfig) ([]Rule, error) {
 		}
 
 		rules = append(rules, Rule{
-			NamePaths:           rc.NamePaths,
-			ValuePaths:          rc.ValuePaths,
-			NameRegex:           nameRe,
-			MinValueLen:         rc.MinValueLen,
-			IgnoreNamePatterns:  ignoreNamePatterns,
-			IgnoreValuePrefixes: rc.IgnoreValuePrefixes,
-			IgnoreValuePatterns: ignorePatterns,
+			NamePaths:              rc.NamePaths,
+			ValuePaths:             rc.ValuePaths,
+			NameRegexes:            nameRegexes,
+			MinValueLen:            rc.MinValueLen,
+			MinEntropy:             rc.MinEntropy,
+			HighEntropyThreshold:   rc.HighEntropyThreshold,
+			MaxNameValueSimilarity: rc.MaxNameValueSimilarity,
+			IgnoreNamePatterns:     ignoreNamePatterns,
+			IgnoreValuePrefixes:    rc.IgnoreValuePrefixes,
+			IgnoreValuePatterns:    ignorePatterns,
 		})
 	}
 
 	return rules, nil
+}
+
+// compileNameRegexes compiles a rule's name_regexes patterns, preserving order.
+func compileNameRegexes(rc RuleConfig) ([]NamedRegex, error) {
+	var compiled []NamedRegex
+	for _, e := range rc.NameRegexes {
+		re, err := regexp.Compile(e.Regex)
+		if err != nil {
+			return nil, err
+		}
+		compiled = append(compiled, NamedRegex{Name: e.Name, Regex: re})
+	}
+
+	return compiled, nil
+}
+
+// CompileConfig compiles a parsed Config into the RuleSet used to scan a file,
+// pairing its name-driven rules with its value-shape custom detectors. It is the
+// single entry point for turning loaded config (base or repo-local) into a
+// ready-to-use RuleSet.
+func CompileConfig(cfg Config) (RuleSet, error) {
+	rules, err := CompileRules(cfg.Rules)
+	if err != nil {
+		return RuleSet{}, err
+	}
+
+	detectors, err := CompileDetectors(cfg.Detectors)
+	if err != nil {
+		return RuleSet{}, err
+	}
+
+	filter, err := compileFilter(cfg.Filter)
+	if err != nil {
+		return RuleSet{}, err
+	}
+
+	return RuleSet{Rules: rules, Detectors: detectors, Filter: filter}, nil
 }
 
 // Walk invokes fn for root if it is a file, or for every file beneath it if it
@@ -127,9 +167,16 @@ func globMatch(pattern, path string) bool {
 	return err == nil && ok
 }
 
+// ScanOptions tunes how ScanFile post-processes findings.
+type ScanOptions struct {
+	// IncludeFiltered keeps findings excluded by the config filter in the results,
+	// marking each Filtered with its FilteredReason, instead of dropping them.
+	IncludeFiltered bool
+}
+
 // ScanFile reads path, selects a Detector for its format, and returns any
 // findings. Unsupported file types yield no findings and no error.
-func ScanFile(path string, rules []Rule) ([]Finding, error) {
+func ScanFile(path string, set RuleSet, opts ScanOptions) ([]Finding, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -142,7 +189,7 @@ func ScanFile(path string, rules []Rule) ([]Finding, error) {
 		return nil, nil
 	}
 
-	return detector.Detect(path, data, rules), nil
+	return applyFilter(detector.Detect(path, data, set), set.Filter, opts.IncludeFiltered)
 }
 
 // isEnvFile reports whether path is a dotenv-style file: ".env", a variant such

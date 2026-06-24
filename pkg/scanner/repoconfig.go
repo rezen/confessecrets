@@ -11,10 +11,10 @@ import (
 // that overrides the base config for files within that repository.
 var RepoConfigNames = []string{".confessecrets.yaml", ".confessecrets.yml"}
 
-// effectiveConfig pairs a parsed config with its compiled rules.
+// effectiveConfig pairs a parsed config with its compiled rule set.
 type effectiveConfig struct {
-	cfg   Config
-	rules []Rule
+	cfg Config
+	set RuleSet
 }
 
 // ConfigResolver resolves the effective scanner config for a file path. When
@@ -31,22 +31,23 @@ type ConfigResolver struct {
 	cache   map[string]effectiveConfig
 }
 
-// NewConfigResolver builds a resolver over base/baseRules. enabled toggles
+// NewConfigResolver builds a resolver over base/baseSet. enabled toggles
 // repo-local config discovery; root bounds the upward search so the resolver
 // never climbs above the scanned tree.
-func NewConfigResolver(base Config, baseRules []Rule, enabled bool, root string) *ConfigResolver {
+func NewConfigResolver(base Config, baseSet RuleSet, enabled bool, root string) *ConfigResolver {
 	return &ConfigResolver{
-		base:    effectiveConfig{cfg: base, rules: baseRules},
+		base:    effectiveConfig{cfg: base, set: baseSet},
 		enabled: enabled,
 		root:    filepath.Clean(root),
 		cache:   map[string]effectiveConfig{},
 	}
 }
 
-// Resolve returns the config and compiled rules that should govern scanning path.
-func (r *ConfigResolver) Resolve(path string) (Config, []Rule) {
+// Resolve returns the config and compiled rule set that should govern scanning
+// path.
+func (r *ConfigResolver) Resolve(path string) (Config, RuleSet) {
 	eff := r.forDir(filepath.Dir(path))
-	return eff.cfg, eff.rules
+	return eff.cfg, eff.set
 }
 
 func (r *ConfigResolver) forDir(dir string) effectiveConfig {
@@ -97,13 +98,13 @@ func (r *ConfigResolver) loadRepoConfig(dir string) (effectiveConfig, bool) {
 			return effectiveConfig{}, false
 		}
 
-		rules, err := CompileRules(cfg.Rules)
+		set, err := CompileConfig(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skip repo config %s: %v\n", path, err)
 			return effectiveConfig{}, false
 		}
 
-		return effectiveConfig{cfg: cfg, rules: rules}, true
+		return effectiveConfig{cfg: cfg, set: set}, true
 	}
 
 	return effectiveConfig{}, false

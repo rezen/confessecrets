@@ -23,14 +23,20 @@ func run() int {
 	root := flag.String("path", ".", "file or directory to scan")
 	outputPath := flag.String("output", "-", "output file, or - for stdout")
 	repoConfig := flag.Bool("repo-config", true, "respect repo-local config (.confessecrets.yaml) found at repo roots")
+	scanMode := flag.String("scan", "all", "what to scan: all, source (only source code), or config (only structured config, omit source code)")
+	showFiltered := flag.Bool("show-filtered", false, "keep findings excluded by the config filter, marked filtered=true with a filtered_reason, instead of dropping them")
 	flag.Parse()
+
+	if *scanMode != "all" && *scanMode != "source" && *scanMode != "config" {
+		return fail(fmt.Errorf("invalid -scan %q: want all, source, or config", *scanMode))
+	}
 
 	cfg, err := scanner.LoadConfig(*configPath)
 	if err != nil {
 		return fail(err)
 	}
 
-	rules, err := scanner.CompileRules(cfg.Rules)
+	set, err := scanner.CompileConfig(cfg)
 	if err != nil {
 		return fail(err)
 	}
@@ -43,25 +49,33 @@ func run() int {
 
 	writer := bufio.NewWriter(out)
 
-	resolver := scanner.NewConfigResolver(cfg, rules, *repoConfig, *root)
+	resolver := scanner.NewConfigResolver(cfg, set, *repoConfig, *root)
 
 	hadFindings := false
 
 	walkErr := scanner.Walk(*root, func(path string) error {
-		effCfg, effRules := resolver.Resolve(path)
+		effCfg, effSet := resolver.Resolve(path)
 
 		if !scanner.ShouldScan(path, effCfg.Files) {
 			return nil
 		}
 
-		findings, err := scanner.ScanFile(path, effRules)
+		if !scanModeAllows(*scanMode, path) {
+			return nil
+		}
+
+		findings, err := scanner.ScanFile(path, effSet, scanner.ScanOptions{IncludeFiltered: *showFiltered})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skip %s: %v\n", path, err)
 			return nil
 		}
 
 		for _, finding := range findings {
-			hadFindings = true
+			// Filtered findings are informational only (shown via -show-filtered)
+			// and do not count toward the "secrets found" exit status.
+			if !finding.Filtered {
+				hadFindings = true
+			}
 
 			line, err := json.Marshal(finding)
 			if err != nil {
@@ -93,6 +107,20 @@ func run() int {
 	}
 
 	return 0
+}
+
+// scanModeAllows reports whether path should be scanned under the given mode:
+// "source" restricts to source-code files, "config" excludes them, and "all"
+// permits everything.
+func scanModeAllows(mode, path string) bool {
+	switch mode {
+	case "source":
+		return scanner.IsSourceFile(path)
+	case "config":
+		return !scanner.IsSourceFile(path)
+	default:
+		return true
+	}
 }
 
 func openOutput(path string) (io.Writer, func(), error) {

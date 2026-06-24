@@ -15,13 +15,13 @@ var envKeyValueRe = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.
 // doesn't parse cleanly, mirroring the JSON/YAML detectors.
 type DotenvDetector struct{}
 
-func (DotenvDetector) Detect(file string, data []byte, rules []Rule) []Finding {
+func (DotenvDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 	root, err := parseDotenv(data)
 	if err != nil {
-		return detectEnvLines(file, data, rules)
+		return detectEnvLines(file, data, set)
 	}
 
-	return detectStructured(file, root, rules)
+	return detectStructured(file, root, set)
 }
 
 // parseDotenv loads dotenv bytes into a flat map for detectStructured. godotenv
@@ -42,7 +42,7 @@ func parseDotenv(data []byte) (map[string]any, error) {
 	return root, nil
 }
 
-func detectEnvLines(file string, data []byte, rules []Rule) []Finding {
+func detectEnvLines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
 	lines := strings.Split(string(data), "\n")
 
@@ -61,7 +61,7 @@ func detectEnvLines(file string, data []byte, rules []Rule) []Finding {
 		key := strings.TrimSpace(m[1])
 		value := cleanEnvScalar(m[2])
 
-		for _, rule := range rules {
+		for _, rule := range set.Rules {
 			if !nameSignalsSecret(key, rule) {
 				continue
 			}
@@ -71,7 +71,7 @@ func detectEnvLines(file string, data []byte, rules []Rule) []Finding {
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(value, rule.MinValueLen) {
+			if reason == "" && !isLikelySecretValue(key, value, rule) {
 				continue
 			}
 			if reason == "" {
@@ -89,7 +89,7 @@ func detectEnvLines(file string, data []byte, rules []Rule) []Finding {
 			))
 		}
 
-		findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, rules)...)
+		findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, set)...)
 	}
 
 	return findings
