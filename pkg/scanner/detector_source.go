@@ -20,13 +20,13 @@ var envLookupRe = regexp.MustCompile(`(?i)(getenv|environ|lookupenv|getproperty|
 // envRefRe matches the left-hand side of a logical-default expression
 // (X || "..." / X ?? "..." / X or "...") when X reads from the environment or
 // configuration, e.g. process.env.KEY, os.getenv("KEY"), Environment.GetEnvironmentVariable(...).
-var envRefRe = regexp.MustCompile(`(?i)(getenv|environ|process\.env|getenvironmentvariable|lookupenv|config(uration)?\[)`)
+var envRefRe = regexp.MustCompile(`(?i)(getenv|environ|process\.env|getenvironmentvariable|lookupenv|config(uration)?\[|env\[)`)
 
 // defaultOperators are the operators that introduce a fallback value: logical-OR
-// and null-coalescing (C#/JS) and Python's boolean `or`. Matching the operator
-// (read from the AST) is what separates a real default from a comparison such as
-// `process.env.MODE == "prod"`.
-var defaultOperators = map[string]bool{"||": true, "??": true, "or": true}
+// and null-coalescing (C#/JS), Python's boolean `or`, and Kotlin's elvis `?:`.
+// Matching the operator (read from the AST) is what separates a real default from
+// a comparison such as `process.env.MODE == "prod"`.
+var defaultOperators = map[string]bool{"||": true, "??": true, "or": true, "?:": true}
 
 // quotedKeyRe extracts a quoted key from a lookup expression, e.g. the
 // "DB_PASSWORD" of os.getenv("DB_PASSWORD").
@@ -63,7 +63,8 @@ func looksLikeArgSecret(name, value string, rule Rule) bool {
 }
 
 // SourceDetector scans general-purpose source code (Python, JavaScript,
-// TypeScript, Go, Java, C#) for hardcoded secrets using tree-sitter. Unlike the
+// TypeScript, Go, Java, C#, Ruby, PHP, Kotlin, Rust) for hardcoded secrets using
+// tree-sitter. Unlike the
 // structured-config detectors, it distinguishes a secret *literal* from a runtime
 // lookup: it flags `password = "hunter2"` (the value node is a string literal)
 // but not `password = os.environ.get("SECRET")` (the value node is a call), which
@@ -231,6 +232,84 @@ var sourceLangs = []*sourceLang{
 (assignment_expression left: (identifier) @name right: (invocation_expression function: (_) @fn arguments: (argument_list (argument (string_literal) @value))))
 `,
 		logicalQuery: `(binary_expression left: (_) @lookup right: (string_literal) @value) @expr`,
+	},
+	{
+		name: "ruby",
+		lang: grammars.RubyLanguage,
+		exts: []string{".rb"},
+		pairQuery: `
+(assignment left: (identifier) @name right: (string) @value)
+(assignment left: (instance_variable) @name right: (string) @value)
+(assignment left: (constant) @name right: (string) @value)
+(pair key: (string) @name value: (string) @value)
+(pair key: (hash_key_symbol) @name value: (string) @value)
+(pair key: (simple_symbol) @name value: (string) @value)
+`,
+		valueQuery: `(string) @value`,
+		callArgQuery: `
+(assignment left: (identifier) @name right: (call method: (identifier) @fn arguments: (argument_list (string) @value)))
+(assignment left: (instance_variable) @name right: (call method: (identifier) @fn arguments: (argument_list (string) @value)))
+`,
+		// Ruby's env reads are ENV["KEY"] and ENV.fetch — element_reference and a
+		// receiver-qualified call, neither a flat two-string call — so the env
+		// fallback is covered by the logical-default pass (ENV["KEY"] || "x")
+		// rather than a dedicated envQuery.
+		logicalQuery: `(binary left: (_) @lookup right: (string) @value) @expr`,
+	},
+	{
+		name: "php",
+		lang: grammars.PhpLanguage,
+		exts: []string{".php"},
+		// PHP single-quoted strings parse as (string); double-quoted as
+		// (encapsed_string). Both are handled throughout.
+		pairQuery: `
+(assignment_expression left: (variable_name) @name right: (encapsed_string) @value)
+(assignment_expression left: (variable_name) @name right: (string) @value)
+(array_element_initializer (encapsed_string) @name (encapsed_string) @value)
+(array_element_initializer (string) @name (string) @value)
+(const_element (name) @name (encapsed_string) @value)
+(const_element (name) @name (string) @value)
+`,
+		valueQuery: `(encapsed_string) @value (string) @value`,
+		callArgQuery: `
+(assignment_expression left: (variable_name) @name right: (function_call_expression function: (name) @fn arguments: (arguments (argument (encapsed_string) @value))))
+(assignment_expression left: (variable_name) @name right: (function_call_expression function: (name) @fn arguments: (arguments (argument (string) @value))))
+`,
+		logicalQuery: `
+(binary_expression left: (_) @lookup right: (encapsed_string) @value) @expr
+(binary_expression left: (_) @lookup right: (string) @value) @expr
+`,
+	},
+	{
+		name: "kotlin",
+		lang: grammars.KotlinLanguage,
+		exts: []string{".kt", ".kts"},
+		// Kotlin's property_declaration does not field-name its initializer; the
+		// string_literal is a positional child after `=`.
+		pairQuery: `
+(property_declaration (variable_declaration (simple_identifier) @name) (string_literal) @value)
+`,
+		valueQuery: `(string_literal) @value`,
+		callArgQuery: `
+(property_declaration (variable_declaration (simple_identifier) @name) (call_expression (navigation_expression) @fn (call_suffix (value_arguments (value_argument (string_literal) @value)))))
+`,
+		// The elvis operator `?:` is an anonymous token (no operator field);
+		// operatorText() recovers it for the logical-default check.
+		logicalQuery: `(elvis_expression (_) @lookup (string_literal) @value) @expr`,
+	},
+	{
+		name: "rust",
+		lang: grammars.RustLanguage,
+		exts: []string{".rs"},
+		pairQuery: `
+(let_declaration pattern: (identifier) @name value: (string_literal) @value)
+(const_item name: (identifier) @name value: (string_literal) @value)
+`,
+		valueQuery: `(string_literal) @value (raw_string_literal) @value`,
+		callArgQuery: `
+(let_declaration pattern: (identifier) @name value: (call_expression function: (_) @fn arguments: (arguments (string_literal) @value)))
+(const_item name: (identifier) @name value: (call_expression function: (_) @fn arguments: (arguments (string_literal) @value)))
+`,
 	},
 }
 
@@ -645,13 +724,22 @@ func (l *loadedLang) detectLogicalDefault(file string, data []byte, tree *ts.Tre
 }
 
 // operatorText returns the text of an expression node's operator field (e.g.
-// "||", "??", "or"), or "" when there is none.
+// "||", "??", "or"), or "" when there is none. Some grammars model the operator
+// as an anonymous token rather than a named "operator" field (e.g. Kotlin's
+// elvis_expression `?:`); in that case it falls back to the first immediate
+// anonymous child whose text is a recognized default operator.
 func (l *loadedLang) operatorText(expr *ts.Node, data []byte) string {
-	op := expr.ChildByFieldName("operator", l.lang)
-	if op == nil {
-		return ""
+	if op := expr.ChildByFieldName("operator", l.lang); op != nil {
+		return op.Text(data)
 	}
-	return op.Text(data)
+
+	for i := 0; i < expr.ChildCount(); i++ {
+		c := expr.Child(i)
+		if c != nil && !c.IsNamed() && defaultOperators[c.Text(data)] {
+			return c.Text(data)
+		}
+	}
+	return ""
 }
 
 // pairFromMatch extracts the @name text, @value text, @value node, and 1-based
@@ -678,9 +766,12 @@ func pairFromMatch(m ts.QueryMatch, data []byte, lines lineIndex) (name, value s
 // literal, mean the value is computed at runtime rather than fixed — an
 // interpolation/substitution. Such values are not static secrets.
 var dynamicLiteralChildTypes = map[string]bool{
-	"interpolation":         true, // Python f-strings, others
-	"template_substitution": true, // JS/TS template literals
-	"string_interpolation":  true,
+	"interpolation":           true, // Python f-strings, Ruby "#{...}", others
+	"template_substitution":   true, // JS/TS template literals
+	"string_interpolation":    true,
+	"variable_name":           true, // PHP double-quoted "$var" / "{$var}"
+	"interpolated_identifier": true, // Kotlin "$var"
+	"interpolated_expression": true, // Kotlin "${...}"
 }
 
 // valueIsDynamic reports whether a captured string-literal node contains an

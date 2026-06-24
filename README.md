@@ -19,8 +19,9 @@ Supported formats: **JSON / JSONC**, **YAML**, **XML** (including .NET
 (`.env`, `.env.*`, `*.env`), **Java properties** (`.properties`), and
 **INI** (`.ini`).
 
-It also scans **source code** — Python, JavaScript, TypeScript, Go, Java, and
-C# — with tree-sitter, so it can tell a hardcoded secret from a runtime lookup.
+It also scans **source code** — Python, JavaScript, TypeScript, Go, Java, C#,
+Ruby, PHP, Kotlin, and Rust — with tree-sitter, so it can tell a hardcoded secret
+from a runtime lookup.
 `password = "hunter2"` confesses; `password = os.environ.get("SECRET")` does not,
 because the value is a *call*, not a string literal. See
 [Scanning source code](#scanning-source-code).
@@ -127,7 +128,8 @@ remaining claims under `extra`).
 ## Scanning source code
 
 Beyond structured config, confessecrets scans source files in **Python**,
-**JavaScript/TypeScript**, **Go**, **Java**, and **C#**. It parses each file with
+**JavaScript/TypeScript**, **Go**, **Java**, **C#**, **Ruby**, **PHP**,
+**Kotlin**, and **Rust**. It parses each file with
 [tree-sitter](https://tree-sitter.github.io/) and inspects the *syntax* of each
 assignment, which lets it avoid the classic false positive that trips up
 regex-only scanners:

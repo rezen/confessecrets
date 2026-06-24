@@ -15,7 +15,7 @@ func rawValueSet(findings []Finding) map[string]bool {
 }
 
 func TestIsSourceFile(t *testing.T) {
-	source := []string{"a.py", "a.pyi", "b.js", "b.jsx", "c.ts", "c.tsx", "d.go", "e.java", "f.cs", "DIR/UP.PY"}
+	source := []string{"a.py", "a.pyi", "b.js", "b.jsx", "c.ts", "c.tsx", "d.go", "e.java", "f.cs", "g.rb", "h.php", "i.kt", "i.kts", "j.rs", "DIR/UP.PY"}
 	notSource := []string{"config.json", "values.yaml", "app.xml", ".env", "x.properties", "y.ini", "README.md", "noext"}
 
 	for _, p := range source {
@@ -204,6 +204,60 @@ func main() {
 `,
 			wantFlag:   []string{"hunter2supersecret", "csfallbacksecret123", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_CS"},
+		},
+		{
+			name: "ruby",
+			ext:  ".rb",
+			code: `password = "hunter2supersecret"
+api_token = ENV["SHOULD_NOT_FLAG_RB"]
+creds = {"secret" => "dictsecretvalue123"}
+opts = {secret_key: "symsecretvalue123"}
+db_default = ENV["DB_PASSWORD"] || "rbfallbacksecret123"
+secret_key = "hunter2dynamic#{tail}"
+aws_key = "` + awsToken + `"
+`,
+			wantFlag:   []string{"hunter2supersecret", "dictsecretvalue123", "symsecretvalue123", "rbfallbacksecret123", awsToken},
+			wantAbsent: []string{"SHOULD_NOT_FLAG_RB", "hunter2dynamic#{tail}"},
+		},
+		{
+			name: "php",
+			ext:  ".php",
+			code: `<?php
+$password = "hunter2supersecret";
+$apiToken = getenv("SHOULD_NOT_FLAG_PHP");
+$creds = ["secret" => "arraysecretvalue123"];
+$dbpw = $_ENV["DB_PASSWORD"] ?? "phpfallbacksecret123";
+$secretKey = "hunter2dynamic$tail";
+$awsKey = "` + awsToken + `";
+`,
+			wantFlag:   []string{"hunter2supersecret", "arraysecretvalue123", "phpfallbacksecret123", awsToken},
+			wantAbsent: []string{"SHOULD_NOT_FLAG_PHP", "hunter2dynamic$tail"},
+		},
+		{
+			name: "kotlin",
+			ext:  ".kt",
+			code: `val password = "hunter2supersecret"
+val apiToken = System.getenv("SHOULD_NOT_FLAG_KT")
+val dbpw = System.getenv("DB_PASSWORD") ?: "ktfallbacksecret123"
+val secretKey = "hunter2dynamic$tail"
+val awsKey = "` + awsToken + `"
+`,
+			wantFlag:   []string{"hunter2supersecret", "ktfallbacksecret123", awsToken},
+			wantAbsent: []string{"SHOULD_NOT_FLAG_KT", "hunter2dynamic$tail"},
+		},
+		{
+			name: "rust",
+			ext:  ".rs",
+			code: `fn main() {
+    let password = "hunter2supersecret";
+    let api_token = std::env::var("SHOULD_NOT_FLAG_RS").unwrap();
+    const SECRET_KEY: &str = "constsecretvalue123";
+    let aws_key = "` + awsToken + `";
+    let _ = (password, api_token, aws_key);
+}
+`,
+			wantFlag:   []string{"hunter2supersecret", "constsecretvalue123", awsToken},
+			wantAbsent: []string{"SHOULD_NOT_FLAG_RS"},
 		},
 	}
 
