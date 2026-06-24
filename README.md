@@ -58,11 +58,12 @@ go run ./cmd/confessecrets -path ~/repos | tee found.txt
 
 ### Flags
 
-| Flag      | Default       | Description                                   |
-|-----------|---------------|-----------------------------------------------|
-| `-config` | `config.yaml` | Path to the scanner config                    |
-| `-path`   | `.`           | File or directory to scan                     |
-| `-output` | `-`           | Output file, or `-` for stdout                |
+| Flag           | Default       | Description                                            |
+|----------------|---------------|--------------------------------------------------------|
+| `-config`      | `config.yaml` | Path to the scanner config                             |
+| `-path`        | `.`           | File or directory to scan                              |
+| `-output`      | `-`           | Output file, or `-` for stdout                         |
+| `-repo-config` | `true`        | Respect repo-local config at repo roots (`=false` off) |
 
 ### Exit codes
 
@@ -148,6 +149,33 @@ rules:
 Value-pattern (gitleaks) scanning is built in and always on; it honors
 `ignore_value_prefixes` / `ignore_value_patterns` so you can suppress
 false positives.
+
+### Repo-local config
+
+When the scan descends into a **repository root** — a directory containing a
+`.git` entry (a normal clone, or a `.git` *file* for worktrees/submodules) — the
+scanner looks for a repo-local config there and uses it for every file in that
+repository. The file names checked, in order, are:
+
+```
+.confessecrets.yaml
+.confessecrets.yml
+```
+
+This lets each repository carry its own allow/deny globs and rules (e.g. an
+internal repo that wants stricter rules, or one that needs extra
+`ignore_value_*` entries). A repo-local config has the same shape as the main
+config and fully replaces the base config for that repository's files.
+
+Semantics:
+
+- A repository **boundary** is respected: a repo *without* its own config uses
+  the base `-config`, even if a parent repository defines one. Nested repos use
+  the config of their **nearest** enclosing repository.
+- A repo-local config that fails to load or compile is reported to stderr and
+  skipped — the scan continues with the base config for that repo.
+- Pass `-repo-config=false` to ignore repo-local configs entirely and apply the
+  base `-config` everywhere.
 
 ## Test
 

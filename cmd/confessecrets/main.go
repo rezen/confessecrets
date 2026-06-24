@@ -22,6 +22,7 @@ func run() int {
 	configPath := flag.String("config", "config.yaml", "scanner config")
 	root := flag.String("path", ".", "file or directory to scan")
 	outputPath := flag.String("output", "-", "output file, or - for stdout")
+	repoConfig := flag.Bool("repo-config", true, "respect repo-local config (.confessecrets.yaml) found at repo roots")
 	flag.Parse()
 
 	cfg, err := scanner.LoadConfig(*configPath)
@@ -42,14 +43,18 @@ func run() int {
 
 	writer := bufio.NewWriter(out)
 
+	resolver := scanner.NewConfigResolver(cfg, rules, *repoConfig, *root)
+
 	hadFindings := false
 
 	walkErr := scanner.Walk(*root, func(path string) error {
-		if !scanner.ShouldScan(path, cfg.Files) {
+		effCfg, effRules := resolver.Resolve(path)
+
+		if !scanner.ShouldScan(path, effCfg.Files) {
 			return nil
 		}
 
-		findings, err := scanner.ScanFile(path, rules)
+		findings, err := scanner.ScanFile(path, effRules)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skip %s: %v\n", path, err)
 			return nil
