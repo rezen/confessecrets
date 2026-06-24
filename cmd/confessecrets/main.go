@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/rezen/confessecrets/pkg/scanner"
+	"github.com/rezen/confessecrets/pkg/version"
 )
 
 func main() {
@@ -25,7 +26,13 @@ func run() int {
 	repoConfig := flag.Bool("repo-config", true, "respect repo-local config (.confessecrets.yaml) found at repo roots")
 	scanMode := flag.String("scan", "all", "what to scan: all, source (only source code), or config (only structured config, omit source code)")
 	showFiltered := flag.Bool("show-filtered", false, "keep findings excluded by the config filter, marked filtered=true with a filtered_reason, instead of dropping them")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String())
+		return 0
+	}
 
 	if *scanMode != "all" && *scanMode != "source" && *scanMode != "config" {
 		return fail(fmt.Errorf("invalid -scan %q: want all, source, or config", *scanMode))
