@@ -40,6 +40,19 @@ go build -o confessecrets ./cmd/confessecrets
 go install github.com/rezen/confessecrets/cmd/confessecrets@latest
 ```
 
+### Releasing
+
+Stamp the commit and build date into the binary via `-ldflags` so they show up
+in `version.String()` (the `Number` const is bumped in the source — see
+`pkg/version/version.go`):
+
+```sh
+go build -ldflags "\
+  -X github.com/rezen/confessecrets/pkg/version.Commit=$(git rev-parse --short HEAD) \
+  -X github.com/rezen/confessecrets/pkg/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -o confessecrets ./cmd/confessecrets
+```
+
 ## Run
 
 The scanner is the `cmd/confessecrets` package — run the **package**, not a single
