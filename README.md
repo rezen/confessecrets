@@ -85,7 +85,7 @@ go run ./cmd/confessecrets -path ~/repos | tee found.txt
 | `-output`      | `-`           | Output file, or `-` for stdout                         |
 | `-repo-config` | `true`        | Respect repo-local config at repo roots (`=false` off) |
 | `-scan`        | `all`         | What to scan: `all`, `source` (only source code), or `config` (only structured config, omit source code) |
-| `-show-filtered` | `false`     | Keep findings excluded by the [filter](#custom-filter), marked `filtered: true` with a `filtered_reason`, instead of dropping them |
+| `-show-filtered` | `false`     | Keep findings excluded by a [filter](#custom-filters) rule, marked `filtered: true` with a `filtered_reason`, instead of dropping them |
 
 ### Exit codes
 
@@ -116,9 +116,15 @@ included so you can correlate without storing the secret itself.
   "value_sha256": "6675cd0c…",
   "entropy": 4.71,
   "name_value_distance": 38,
-  "reason": "gitleaks:github-pat"
+  "reason": "gitleaks:github-pat",
+  "tags": ["lang:dotenv", "value-pattern"]
 }
 ```
+
+Every finding carries a `tags` array. It always includes a `lang:<name>` tag for
+the source language or config format it came from (e.g. `lang:python`,
+`lang:json`, `lang:dotenv`), plus the `id` of any `tag`-action [filter](#custom-filters)
+the finding matched. The field is omitted when a finding has no tags.
 
 Every finding carries the `entropy` field: the Shannon entropy (bits/symbol) of
 the raw value, rounded to two decimals — handy for triage and tuning the
@@ -306,16 +312,34 @@ Notes:
   confessecrets is an offline scanner that redacts values rather than sending
   them anywhere — so that field is ignored if present.
 
-### Custom filter
+### Custom filters
 
-A top-level `filter` is an [expr-lang](https://expr-lang.org) expression evaluated
-against every finding; when it is **true**, the finding is dropped. It's a flexible
-way to suppress whole classes of false positives by their computed properties:
+The top-level `filter` is a **list** of filter rules, each an
+[expr-lang](https://expr-lang.org) expression evaluated against every finding.
+When a rule's expression is **true** for a finding, its **action** decides what
+happens:
+
+- **`filter`** (the default) — drop the finding. This is the suppression behavior:
+  silence whole classes of false positives by their computed properties.
+- **`tag`** — keep the finding and add the rule's `id` to its `tags`. A flexible
+  way to label findings (e.g. for downstream triage) without removing them.
+
+A rule is written either as a bare string (an expression with the default
+`filter` action) or as an `{id, action, filter}` mapping:
 
 ```yaml
-# Drop low-entropy values whose name closely echoes the value.
-filter: 'entropy <= 4 && name_value_similarity > 0.65'
+filter:
+  # Bare string → filter action: drop low-entropy values whose name echoes the value.
+  - 'entropy <= 4 && name_value_similarity > 0.65'
+  # Mapping → tag action: keep value-pattern hits, tagged "value-pattern".
+  - id: value-pattern
+    action: tag
+    filter: 'reason startsWith "gitleaks:"'
 ```
+
+Every rule runs against every finding, so one finding can be tagged by several
+rules; the first `filter`-action rule to match drops it. A `tag` rule must carry
+an `id` (the tag it applies). Leave the list empty to disable filtering.
 
 The variables available to an expression are:
 
@@ -331,14 +355,14 @@ The variables available to an expression are:
 
 expr-lang operators and built-ins work too, so richer rules like
 `value matches "(?i)example$"`, `name contains "test"`, or
-`reason startsWith "gitleaks:"` are valid. The expression is type-checked at load
-time, so a bad filter fails fast. Leave it empty to disable.
+`reason startsWith "gitleaks:"` are valid. Each expression is type-checked at load
+time, so a bad filter fails fast.
 
-To see what a filter is removing, run with `-show-filtered`: excluded findings are
-kept in the output with `"filtered": true` and a `"filtered_reason"` holding the
-matched expression, rather than being dropped. Filtered findings are informational
-and do **not** affect the exit code, so a scan whose only findings are filtered
-still exits `0`.
+To see what the `filter`-action rules are removing, run with `-show-filtered`:
+excluded findings are kept in the output with `"filtered": true` and a
+`"filtered_reason"` holding the matched expression, rather than being dropped.
+Filtered findings are informational and do **not** affect the exit code, so a scan
+whose only findings are filtered still exits `0`.
 
 ### Repo-local config
 

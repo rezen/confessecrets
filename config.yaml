@@ -162,13 +162,20 @@ detectors:
     # Optional: require a minimum Shannon entropy (bits/symbol) of the match.
     entropy: 3.0
 
-# Optional global filter (expr-lang, https://expr-lang.org). When the expression
-# is true for a finding, that finding is dropped — a flexible way to suppress
-# whole classes of false positives by their computed properties. Available
-# variables: entropy, name_value_similarity, value_length (numbers); name, value,
-# reason, file, path, name_path, value_path (strings). expr built-ins such as
-# matches/contains/startsWith are available. Leave empty to disable.
+# Optional list of filter rules (expr-lang, https://expr-lang.org). Each rule is
+# an expression evaluated against every finding. A bare string defaults to the
+# "filter" action (drop the match); a mapping with id/action/filter can instead
+# "tag" a match — keeping it and adding the rule's id to the finding's tags.
+# Available variables: entropy, name_value_similarity, value_length (numbers);
+# name, value, reason, file, path, name_path, value_path (strings). expr built-ins
+# such as matches/contains/startsWith are available. Leave empty to disable.
 #
-# Example: drop low-entropy values whose name closely echoes the value.
-# filter: 'entropy <= 4 && name_value_similarity > 0.65'
-filter: 'entropy <= 4 && name_value_similarity > 0.65'
+# Findings also carry a "lang:<name>" tag for the source language or config format
+# (e.g. "lang:python", "lang:json").
+filter:
+  # Drop low-entropy values whose name closely echoes the value.
+  - 'entropy <= 4 && name_value_similarity > 0.65'
+  # Keep, but tag, findings that only matched a gitleaks value pattern.
+  - id: value-pattern
+    action: tag
+    filter: 'reason startsWith "gitleaks:"'

@@ -110,12 +110,12 @@ func CompileConfig(cfg Config) (RuleSet, error) {
 		return RuleSet{}, err
 	}
 
-	filter, err := compileFilter(cfg.Filter)
+	filters, err := compileFilters(cfg.Filter)
 	if err != nil {
 		return RuleSet{}, err
 	}
 
-	return RuleSet{Rules: rules, Detectors: detectors, Filter: filter}, nil
+	return RuleSet{Rules: rules, Detectors: detectors, Filters: filters}, nil
 }
 
 // Walk invokes fn for root if it is a file, or for every file beneath it if it
@@ -189,7 +189,42 @@ func ScanFile(path string, set RuleSet, opts ScanOptions) ([]Finding, error) {
 		return nil, nil
 	}
 
-	return applyFilter(detector.Detect(path, data, set), set.Filter, opts.IncludeFiltered)
+	findings := detector.Detect(path, data, set)
+	if tag := languageTag(path); tag != "" {
+		for i := range findings {
+			findings[i].Tags = appendTag(findings[i].Tags, tag)
+		}
+	}
+
+	return applyFilters(findings, set.Filters, opts.IncludeFiltered)
+}
+
+// languageTag returns the "lang:<name>" tag for path's file type — the source
+// language for code files (e.g. "lang:python") or the format for structured
+// config (e.g. "lang:json") — or "" for unsupported types.
+func languageTag(path string) string {
+	if isEnvFile(path) {
+		return "lang:dotenv"
+	}
+
+	if spec := sourceLangForExt(strings.ToLower(filepath.Ext(path))); spec != nil {
+		return "lang:" + spec.name
+	}
+
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json", ".jsonc":
+		return "lang:json"
+	case ".yaml", ".yml":
+		return "lang:yaml"
+	case ".xml", ".config":
+		return "lang:xml"
+	case ".properties":
+		return "lang:properties"
+	case ".ini":
+		return "lang:ini"
+	}
+
+	return ""
 }
 
 // isEnvFile reports whether path is a dotenv-style file: ".env", a variant such

@@ -10,10 +10,81 @@ type Config struct {
 	Files     FilePolicy       `yaml:"files"`
 	Rules     []RuleConfig     `yaml:"rules"`
 	Detectors []DetectorConfig `yaml:"detectors"`
-	// Filter is an optional expr-lang expression evaluated against each finding;
-	// when it is true the finding is dropped. See Filter for the available
-	// variables. Empty means no filtering.
+	// Filter is an optional list of filter rules. Each rule is an expr-lang
+	// expression evaluated against every finding; what happens to a match depends
+	// on the rule's action (drop it, or tag it). See FilterConfig and Filter for
+	// the available variables. Empty means no filtering.
+	Filter FilterConfigs `yaml:"filter"`
+}
+
+// Filter actions decide what happens to a finding a filter rule matches.
+const (
+	// filterActionFilter drops a matching finding (the default action).
+	filterActionFilter = "filter"
+	// filterActionTag keeps a matching finding and adds the rule's ID to its tags.
+	filterActionTag = "tag"
+)
+
+// FilterConfig is one entry of the top-level filter list. It accepts two YAML
+// forms: a bare scalar (the expression, with the default "filter" action) or a
+// mapping with id/action/filter keys.
+type FilterConfig struct {
+	// ID labels the rule; it is the tag added to findings when Action is "tag".
+	ID string `yaml:"id"`
+	// Action is "filter" (drop matches, the default) or "tag" (keep and tag them).
+	Action string `yaml:"action"`
+	// Filter is the expr-lang expression evaluated against each finding.
 	Filter string `yaml:"filter"`
+}
+
+// UnmarshalYAML accepts either a scalar expression (action defaults to "filter")
+// or an {id, action, filter} mapping.
+func (f *FilterConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		f.Filter = value.Value
+		f.Action = filterActionFilter
+		return nil
+	}
+
+	var m struct {
+		ID     string `yaml:"id"`
+		Action string `yaml:"action"`
+		Filter string `yaml:"filter"`
+	}
+	if err := value.Decode(&m); err != nil {
+		return err
+	}
+
+	f.ID = m.ID
+	f.Action = m.Action
+	f.Filter = m.Filter
+	if f.Action == "" {
+		f.Action = filterActionFilter
+	}
+	return nil
+}
+
+// FilterConfigs is the top-level filter list. It accepts a YAML sequence of
+// entries or, for convenience, a single bare entry (scalar or mapping) treated
+// as a one-element list.
+type FilterConfigs []FilterConfig
+
+func (fs *FilterConfigs) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.SequenceNode {
+		var list []FilterConfig
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*fs = list
+		return nil
+	}
+
+	var one FilterConfig
+	if err := one.UnmarshalYAML(value); err != nil {
+		return err
+	}
+	*fs = FilterConfigs{one}
+	return nil
 }
 
 type FilePolicy struct {
@@ -146,7 +217,7 @@ type CustomDetector struct {
 type RuleSet struct {
 	Rules     []Rule
 	Detectors []CustomDetector
-	Filter    *Filter
+	Filters   []*Filter
 }
 
 type Finding struct {
@@ -161,6 +232,10 @@ type Finding struct {
 	Entropy             float64 `json:"entropy"`
 	NameValueSimilarity float64 `json:"name_value_similarity"`
 	Reason              string  `json:"reason"`
+	// Tags are free-form labels attached to the finding: a "lang:<name>" tag for
+	// the source language or config format, plus the ID of any "tag"-action filter
+	// rule the finding matched. Omitted when empty.
+	Tags []string `json:"tags,omitempty"`
 	// Filtered is set when the finding matched the config filter but was retained
 	// (via -show-filtered) instead of dropped; FilteredReason holds the expression
 	// that excluded it. Both are omitted from normal, unfiltered findings.
