@@ -1,10 +1,56 @@
 package scanner
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestScanFilePopulatesLangLineLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.ini")
+	content := "[creds]\naws_key=AKIAIOSFODNN7EXAMPLE\nendpoint=https://abc123.lambda-url.us-east-1.on.aws/\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	rules, err := CompileRules([]RuleConfig{{NameRegexes: []NameRegexEntry{{Regex: `(?i)key`}}}})
+	if err != nil {
+		t.Fatalf("CompileRules: %v", err)
+	}
+
+	findings, err := ScanFile(path, RuleSet{Rules: rules}, ScanOptions{})
+	if err != nil {
+		t.Fatalf("ScanFile: %v", err)
+	}
+
+	byName := map[string]Finding{}
+	for _, f := range findings {
+		byName[f.Name] = f
+	}
+
+	// The Lang field replaces the former "lang:" tag, so it must not reappear there.
+	secret, ok := byName["aws_key"]
+	if !ok {
+		t.Fatalf("aws_key finding missing: %+v", findings)
+	}
+	if secret.Level != levelHigh || secret.Lang != "ini" {
+		t.Errorf("secret: level=%q lang=%q, want high/ini", secret.Level, secret.Lang)
+	}
+	if hasTag(secret.Tags, "lang:ini") {
+		t.Errorf("lang must be carried in the Lang field, not a tag: %v", secret.Tags)
+	}
+
+	info, ok := byName["endpoint"]
+	if !ok {
+		t.Fatalf("endpoint info finding missing: %+v", findings)
+	}
+	if info.Level != levelInfo || info.Reason != "info:aws-lambda-url" || info.Lang != "ini" {
+		t.Errorf("info: level=%q reason=%q lang=%q, want info/info:aws-lambda-url/ini", info.Level, info.Reason, info.Lang)
+	}
+}
 
 func TestNameRegexesSchema(t *testing.T) {
 	t.Run("parses string and dict entries from YAML", func(t *testing.T) {

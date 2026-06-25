@@ -26,9 +26,9 @@ creds = {"secret": ["pyDict1secretVal"]}`,
 			name: "javascript",
 			ext:  ".js",
 			code: `const passwords = ["jsArr1secretVal", "jsArr2secretVal"];
-obj.apiKeys = ["jsMember1secretVal"];
+obj.apiKeys = ["TmpP2trPs2vHnv9Fv"];
 const cfg = { secret: ["jsObj1secretVal"] };`,
-			wantFlag: []string{"jsArr1secretVal", "jsArr2secretVal", "jsMember1secretVal", "jsObj1secretVal"},
+			wantFlag: []string{"jsArr1secretVal", "jsArr2secretVal", "TmpP2trPs2vHnv9Fv", "jsObj1secretVal"},
 		},
 		{
 			name:     "typescript",
@@ -51,10 +51,10 @@ func main() {
 			name: "java",
 			ext:  ".java",
 			code: `class C { void m() {
-	String[] passwords = {"javaArr1secretVal", "javaArr2secretVal"};
-	String[] apiKeys = new String[]{"javaNew1secretVal"};
+	String[] passwords = {"RhhG5qdVk2qHjf5Gt", "McgK9skHs5qVfb1Bb"};
+	String[] apiKeys = new String[]{"CmcD1tbQm0dQpv6Kn"};
 } }`,
-			wantFlag: []string{"javaArr1secretVal", "javaArr2secretVal", "javaNew1secretVal"},
+			wantFlag: []string{"RhhG5qdVk2qHjf5Gt", "McgK9skHs5qVfb1Bb", "CmcD1tbQm0dQpv6Kn"},
 		},
 		{
 			name: "c_sharp",
@@ -90,9 +90,9 @@ $apiKeys = array("phpArrFn1secretVal");`,
 		{
 			name: "kotlin",
 			ext:  ".kt",
-			code: `val passwords = listOf("ktList1secretVal", "ktList2secretVal")
+			code: `val passwords = listOf("RvrG2krDc1mFpg0Jg", "BbmJ3gfVc3hThg1Vr")
 val apiKeys = arrayOf("ktArr1secretVal")`,
-			wantFlag: []string{"ktList1secretVal", "ktList2secretVal", "ktArr1secretVal"},
+			wantFlag: []string{"RvrG2krDc1mFpg0Jg", "BbmJ3gfVc3hThg1Vr", "ktArr1secretVal"},
 		},
 		{
 			name: "rust",

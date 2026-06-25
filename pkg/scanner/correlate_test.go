@@ -1,6 +1,9 @@
 package scanner
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // finding builds a minimal Finding for correlation tests.
 func finding(name, reason, path string) Finding {
@@ -84,6 +87,133 @@ func TestCorrelateThreePartSet(t *testing.T) {
 	}
 	if len(out[0].Correlated) != 2 {
 		t.Fatalf("want 2 embedded secondaries, got %d", len(out[0].Correlated))
+	}
+}
+
+func TestCorrelateDropsFileFromEmbeddedPartner(t *testing.T) {
+	rules := mustCorrelations(t, []CorrelationConfig{{
+		ID:       "aws-credential-pair",
+		Match:    FindingMatcher{NameRegex: "(?i)secret_access_key"},
+		Partners: []FindingMatcher{{ReasonRegex: "gitleaks:aws-access-token"}},
+	}})
+
+	in := []Finding{
+		{Name: "aws_access_key_id", Reason: "gitleaks:aws-access-token", Path: "line:1", File: "creds.env"},
+		{Name: "aws_secret_access_key", Reason: "high_entropy:4.9", Path: "line:2", File: "creds.env"},
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want 1 root finding, got %d", len(out))
+	}
+	if out[0].File != "creds.env" {
+		t.Errorf("primary File = %q, want creds.env retained", out[0].File)
+	}
+	if len(out[0].Correlated) != 1 {
+		t.Fatalf("want 1 embedded secondary, got %d", len(out[0].Correlated))
+	}
+	if got := out[0].Correlated[0].File; got != "" {
+		t.Errorf("embedded partner File = %q, want empty (dropped)", got)
+	}
+	if out[0].Correlated[0].Path != "line:1" {
+		t.Errorf("embedded partner Path = %q, want line:1 retained", out[0].Correlated[0].Path)
+	}
+}
+
+func TestCorrelateEnrichesPrimaryMeta(t *testing.T) {
+	rules := mustCorrelations(t, []CorrelationConfig{{
+		ID:    "oauth-client-bundle",
+		Match: FindingMatcher{NameRegex: "(?i)client_secret"},
+		Partners: []FindingMatcher{
+			{NameRegex: "(?i)client_id"},
+			{NameRegex: "(?i)username"},
+		},
+	}})
+
+	in := []Finding{
+		{Name: "client_id", Reason: "name", Path: "line:1", RawValue: "abc-123", Value: "ab***23"},
+		{Name: "username", Reason: "name", Path: "line:2", RawValue: "svc-account", Value: "sv***nt"},
+		{Name: "client_secret", Reason: "name", Path: "line:3", RawValue: "topsecret", Value: "to***et"},
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want 1 root finding, got %d", len(out))
+	}
+	meta := out[0].Meta
+	if meta == nil {
+		t.Fatal("expected primary Meta to be populated from partners")
+	}
+	if meta.ClientID != "abc-123" {
+		t.Errorf("ClientID = %q, want abc-123 (partner raw value)", meta.ClientID)
+	}
+	if meta.Username != "svc-account" {
+		t.Errorf("Username = %q, want svc-account (partner raw value)", meta.Username)
+	}
+}
+
+func TestCorrelateEnrichesURLFromPartner(t *testing.T) {
+	// The built-in function-url rule folds a URL partner into the function key;
+	// the partner's URL should land in the primary's Meta.URL.
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		{Name: "BASE_URL", Reason: "name", Path: "line:2", RawValue: "https://example-api.azurewebsites.net/api/inventory/search"},
+		{Name: "FUNCTION_KEY", Reason: "name", Path: "line:3", RawValue: "6v-abm...", Value: "6v***=="},
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want BASE_URL folded into FUNCTION_KEY, got %d roots", len(out))
+	}
+	meta := out[0].Meta
+	if meta == nil || meta.URL != "https://example-api.azurewebsites.net/api/inventory/search" {
+		t.Fatalf("want primary Meta.URL set from partner, got %+v", meta)
+	}
+}
+
+func TestCorrelateEnrichesURLFromInfoReason(t *testing.T) {
+	// A partner identified as a URL only by its info: reason still fills Meta.URL.
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		{Name: "endpoint", Reason: "info:azure-app-service", Path: "line:1", RawValue: "https://svc.example.com"},
+		{Name: "client_secret", Reason: "name", Path: "line:2", RawValue: "topsecret", Value: "to***et"},
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want endpoint folded into client_secret, got %d roots", len(out))
+	}
+	if meta := out[0].Meta; meta == nil || meta.URL != "https://svc.example.com" {
+		t.Fatalf("want primary Meta.URL from info-URL partner, got %+v", meta)
+	}
+}
+
+func TestCorrelateEnrichDoesNotOverwriteValueDerived(t *testing.T) {
+	rules := mustCorrelations(t, []CorrelationConfig{{
+		ID:       "oauth-client-bundle",
+		Match:    FindingMatcher{NameRegex: "(?i)client_secret"},
+		Partners: []FindingMatcher{{NameRegex: "(?i)client_id"}},
+	}})
+
+	// Primary already carries a value-derived ClientID; the partner must not clobber it.
+	in := []Finding{
+		{Name: "client_id", Reason: "name", Path: "line:1", RawValue: "partner-id"},
+		{Name: "client_secret", Reason: "name", Path: "line:2", Meta: &Meta{ClientID: "value-derived-id"}},
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want 1 root finding, got %d", len(out))
+	}
+	if got := out[0].Meta.ClientID; got != "value-derived-id" {
+		t.Errorf("ClientID = %q, want value-derived-id preserved", got)
 	}
 }
 
@@ -187,6 +317,107 @@ func TestCorrelateMatcherExpressionForm(t *testing.T) {
 	if len(out[0].Correlated) != 1 || out[0].Correlated[0].Name != "client_id" {
 		t.Fatalf("expression matcher did not pair correctly: %+v", out[0].Correlated)
 	}
+}
+
+func TestCorrelateExpressionBareCurrentFields(t *testing.T) {
+	// A when-expression may reference the current finding's fields directly (bare
+	// `name`), the same way a filter expression does, alongside `prev`.
+	rules := mustCorrelations(t, []CorrelationConfig{{
+		ID:   "function-url-expr",
+		When: `name contains "function" && prev.name contains "url"`,
+	}})
+
+	in := []Finding{
+		finding("api_url", "name", "line:1"),
+		finding("handler_function", "name", "line:2"),
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want url folded into function, got %d roots", len(out))
+	}
+	if len(out[0].Correlated) != 1 || out[0].Correlated[0].Name != "api_url" {
+		t.Fatalf("bare-name correlation did not pair correctly: %+v", out[0].Correlated)
+	}
+}
+
+func TestBuiltinFunctionURLCorrelation(t *testing.T) {
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		finding("function_url", "info:aws-lambda-url", "line:1"),
+		finding("lambda_function", "name", "line:2"),
+	}
+
+	out := correlateFindings(in, rules)
+
+	if len(out) != 1 {
+		t.Fatalf("want function_url folded into lambda_function, got %d roots", len(out))
+	}
+	if !hasTag(out[0].Tags, "function-url") || len(out[0].Correlated) != 1 {
+		t.Errorf("built-in function-url pairing not applied: tags=%v correlated=%d", out[0].Tags, len(out[0].Correlated))
+	}
+}
+
+func TestBuiltinClientSecretURLCorrelation(t *testing.T) {
+	rules := mustCorrelations(t, nil)
+
+	// A URL identified by name folds into the client_secret.
+	in := []Finding{
+		finding("token_url", "name", "line:1"),
+		finding("client_secret", "name", "line:2"),
+	}
+	out := correlateFindings(in, rules)
+	if len(out) != 1 {
+		t.Fatalf("want token_url folded into client_secret, got %d roots", len(out))
+	}
+	if !hasTag(out[0].Tags, "client-secret-url") || len(out[0].Correlated) != 1 {
+		t.Errorf("client-secret-url pairing not applied: tags=%v correlated=%d", out[0].Tags, len(out[0].Correlated))
+	}
+
+	// A URL identified only by its info: reason (a service endpoint) also folds in.
+	in = []Finding{
+		finding("BASE_URL", "info:azure-app-service", "line:1"),
+		finding("CLIENT_SECRET", "name", "line:2"),
+	}
+	out = correlateFindings(in, rules)
+	if len(out) != 1 || len(out[0].Correlated) != 1 || out[0].Correlated[0].Name != "BASE_URL" {
+		t.Fatalf("info-URL did not fold into client_secret: %+v", out)
+	}
+}
+
+func TestClientIDWinsOverURLForClientSecret(t *testing.T) {
+	// When both a client_id and a URL precede a client_secret, the canonical
+	// oauth-client-credentials pairing (listed first) claims the primary, so the
+	// client_id is folded in rather than the URL.
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		finding("token_url", "name", "line:1"),
+		finding("client_id", "name", "line:2"),
+		finding("client_secret", "name", "line:3"),
+	}
+	out := correlateFindings(in, rules)
+
+	primary := findClientSecret(out)
+	if !hasTag(primary.Tags, "oauth-client-credentials") {
+		t.Fatalf("client_id pairing should win: tags=%v", primary.Tags)
+	}
+	if len(primary.Correlated) != 1 || primary.Correlated[0].Name != "client_id" {
+		t.Errorf("want client_id folded, got %+v", primary.Correlated)
+	}
+}
+
+// findClientSecret returns the root finding named client_secret (any case), for
+// assertions when other roots may remain alongside it.
+func findClientSecret(findings []Finding) Finding {
+	for _, f := range findings {
+		if strings.EqualFold(f.Name, "client_secret") {
+			return f
+		}
+	}
+	return Finding{}
 }
 
 func TestCompileFindingMatcherExprRegexConflict(t *testing.T) {

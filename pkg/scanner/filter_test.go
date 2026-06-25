@@ -64,22 +64,22 @@ filter:
 	})
 }
 
-// TestLanguageTag checks the per-format language tag derived from a file path.
-func TestLanguageTag(t *testing.T) {
+// TestLanguageName checks the per-format language name derived from a file path.
+func TestLanguageName(t *testing.T) {
 	cases := map[string]string{
-		"app.py":         "lang:python",
-		"main.go":        "lang:go",
-		"config.json":    "lang:json",
-		"settings.yaml":  "lang:yaml",
-		"web.config":     "lang:xml",
-		"app.properties": "lang:properties",
-		".env":           "lang:dotenv",
-		"app.env":        "lang:dotenv",
+		"app.py":         "python",
+		"main.go":        "go",
+		"config.json":    "json",
+		"settings.yaml":  "yaml",
+		"web.config":     "xml",
+		"app.properties": "properties",
+		".env":           "dotenv",
+		"app.env":        "dotenv",
 		"notes.txt":      "",
 	}
 	for path, want := range cases {
-		if got := languageTag(path); got != want {
-			t.Errorf("languageTag(%q) = %q, want %q", path, got, want)
+		if got := languageName(path); got != want {
+			t.Errorf("languageName(%q) = %q, want %q", path, got, want)
 		}
 	}
 }

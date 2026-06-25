@@ -23,6 +23,9 @@ import (
 //	name                  (string) the key name
 //	value                 (string) the raw (unredacted) value
 //	reason                (string) why the value was flagged
+//	lang                  (string) source language / config format (e.g. "json")
+//	level                 (string) severity: "high" (secret) or "info"
+//	line                  (number) 1-based source line, or 0 if not line-oriented
 //	file, path, name_path, value_path (string) location fields
 //
 // expr-lang built-ins (matches, contains, startsWith, endsWith, lower, len, ...)
@@ -164,6 +167,9 @@ func filterEnv(f Finding) map[string]any {
 		"reason":                f.Reason,
 		"file":                  f.File,
 		"path":                  f.Path,
+		"line":                  f.Line,
+		"lang":                  f.Lang,
+		"level":                 f.Level,
 		"name_path":             f.NamePath,
 		"value_path":            f.ValuePath,
 	}

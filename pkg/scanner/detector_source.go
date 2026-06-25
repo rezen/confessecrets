@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -473,10 +474,18 @@ func (l *loadedLang) detect(file string, data []byte, set RuleSet) []Finding {
 
 	var findings []Finding
 	findings = append(findings, l.detectNamed(file, data, tree, lines, set.Rules)...)
-	findings = append(findings, l.detectValues(file, data, tree, lines, set)...)
+	findings = append(findings, l.detectValues(file, data, tree, lines, set, l.namedValueOffsets(data, tree))...)
 	findings = append(findings, l.detectEnvFallback(file, data, tree, lines, set.Rules)...)
 	findings = append(findings, l.detectCallArgSecret(file, data, tree, lines, set.Rules)...)
 	findings = append(findings, l.detectLogicalDefault(file, data, tree, lines, set.Rules)...)
+
+	// The passes above run in pass order, not source order, so a value-shape
+	// finding on an earlier line (e.g. a BASE_URL endpoint) can trail a
+	// name-driven finding on a later line (FUNCTION_KEY). Restore source order so
+	// downstream correlation sees a partner on an earlier line as a prior finding.
+	sort.SliceStable(findings, func(i, j int) bool {
+		return findings[i].Line < findings[j].Line
+	})
 	return findings
 }
 
@@ -535,7 +544,7 @@ func (l *loadedLang) detectNamed(file string, data []byte, tree *ts.Tree, lines 
 
 // detectValues applies value-driven detection: any string literal whose shape
 // matches a gitleaks pattern, regardless of the surrounding name.
-func (l *loadedLang) detectValues(file string, data []byte, tree *ts.Tree, lines lineIndex, set RuleSet) []Finding {
+func (l *loadedLang) detectValues(file string, data []byte, tree *ts.Tree, lines lineIndex, set RuleSet, names map[uint32]string) []Finding {
 	var findings []Finding
 
 	for _, m := range l.valueQ.Execute(tree) {
@@ -548,13 +557,45 @@ func (l *loadedLang) detectValues(file string, data []byte, tree *ts.Tree, lines
 				continue
 			}
 
+			start := cap.Node.StartByte()
 			value := cleanSourceLiteral(cap.Text(data))
-			path := fmt.Sprintf("line:%d", lines.lineAt(int(cap.Node.StartByte())))
-			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: "", Value: value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
+			path := fmt.Sprintf("line:%d", lines.lineAt(int(start)))
+			// When the literal is the right-hand side of a named assignment (or a
+			// dict/list element), carry that name on the value-shape finding instead
+			// of leaving it empty, e.g. azure_url = "x.azurewebsites.net".
+			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: names[start], Value: value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 		}
 	}
 
 	return findings
+}
+
+// namedValueOffsets maps the start byte of each string literal that is the value
+// of a named assignment (or a dict/list element) to that name, derived from the
+// pair query. It lets value-shape scanning recover the surrounding name for a
+// literal it would otherwise see without one.
+func (l *loadedLang) namedValueOffsets(data []byte, tree *ts.Tree) map[uint32]string {
+	names := map[uint32]string{}
+	for _, m := range l.pairQ.Execute(tree) {
+		var name string
+		var haveName bool
+		for i := range m.Captures {
+			if m.Captures[i].Name == "name" {
+				name = cleanSourceName(m.Captures[i].Text(data))
+				haveName = true
+				break
+			}
+		}
+		if !haveName {
+			continue
+		}
+		for i := range m.Captures {
+			if m.Captures[i].Name == "value" {
+				names[m.Captures[i].Node.StartByte()] = name
+			}
+		}
+	}
+	return names
 }
 
 // detectEnvFallback flags a hardcoded fallback secret passed to an environment

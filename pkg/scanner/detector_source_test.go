@@ -48,28 +48,28 @@ func TestSourceArgsAndDefaults(t *testing.T) {
 		{
 			name: "python-callarg-and-or-default",
 			ext:  ".py",
-			code: `password = vault.fetch("key", "SECER$%$%$hERE")
-api = os.getenv("API_KEY") or "pyorfallbacksecret"
+			code: `password = vault.fetch("key", "K7q$%$%$Vp9Zb")
+api = os.getenv("API_KEY") or "GvbT3skKp1sVtt7St"
 prompt_pw = getpass("Enter Password: ")`,
-			wantFlag:   []string{"SECER$%$%$hERE", "pyorfallbacksecret"},
+			wantFlag:   []string{"K7q$%$%$Vp9Zb", "GvbT3skKp1sVtt7St"},
 			wantAbsent: []string{"key", "Enter Password: "},
 		},
 		{
 			name: "js-logical-default-and-comparison",
 			ext:  ".js",
-			code: `const k = process.env.API_KEY || "jsorfallbacksecret";
+			code: `const k = process.env.API_KEY || "GvvS3rrGt6mMcc6Dh";
 const password = vault.fetch("key", "JSARG$secret123");
 const mode = process.env.API_KEY == "shouldnotflagcompare";`,
-			wantFlag:   []string{"jsorfallbacksecret", "JSARG$secret123"},
+			wantFlag:   []string{"GvvS3rrGt6mMcc6Dh", "JSARG$secret123"},
 			wantAbsent: []string{"shouldnotflagcompare", "key"},
 		},
 		{
 			name: "csharp-null-coalescing",
 			ext:  ".cs",
 			code: `class C { void M() {
-    string k = System.Environment.GetEnvironmentVariable("API_KEY") ?? "csorfallbacksecret";
+    string k = System.Environment.GetEnvironmentVariable("API_KEY") ?? "FvbV3dkRg4vRts2Ss";
 } }`,
-			wantFlag:   []string{"csorfallbacksecret"},
+			wantFlag:   []string{"FvbV3dkRg4vRts2Ss"},
 			wantAbsent: []string{},
 		},
 	}
@@ -122,37 +122,37 @@ func TestSourceDetector(t *testing.T) {
 		{
 			name: "python",
 			ext:  ".py",
-			code: `password = "hunter2supersecret"
+			code: `password = "DnsG3tmHg6hTgv3Kd"
 api_token = os.environ.get("SHOULD_NOT_FLAG_PY")
-creds = {"secret": "dictsecretvalue123"}
+creds = {"secret": "DjnR3mpFb3kSnc5Fd"}
 secret_key = f"hunter2dynamic{tail}"
-db_default = os.getenv("DB_PASSWORD", "plainfallbackpw123")
+db_default = os.getenv("DB_PASSWORD", "NntJ4sqRh1qGmk2Pg")
 port = os.getenv("PORT", "8080")
 aws_key = "` + awsToken + `"
 `,
-			wantFlag:   []string{"hunter2supersecret", "dictsecretvalue123", "plainfallbackpw123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "DjnR3mpFb3kSnc5Fd", "NntJ4sqRh1qGmk2Pg", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_PY", "hunter2dynamic{tail}", "8080"},
 		},
 		{
 			name: "javascript",
 			ext:  ".js",
-			code: `const password = "hunter2supersecret";
+			code: `const password = "DnsG3tmHg6hTgv3Kd";
 const apiToken = getEnv("SHOULD_NOT_FLAG_JS");
-const obj = { secret: "objsecretvalue123" };
-const dbpw = getEnv("DB_PASSWORD", "jsfallbacksecret123");
+const obj = { secret: "GtvD2dsHj2pBfq3Sj" };
+const dbpw = getEnv("DB_PASSWORD", "GkqC0bbBj4fFnq5Pj");
 const awsKey = "` + awsToken + `";
 `,
-			wantFlag:   []string{"hunter2supersecret", "objsecretvalue123", "jsfallbacksecret123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "GtvD2dsHj2pBfq3Sj", "GkqC0bbBj4fFnq5Pj", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_JS"},
 		},
 		{
 			name: "typescript",
 			ext:  ".ts",
-			code: `const password: string = "hunter2supersecret";
+			code: `const password: string = "DnsG3tmHg6hTgv3Kd";
 const apiToken: string = getEnv("SHOULD_NOT_FLAG_TS");
 const awsKey = "` + awsToken + `";
 `,
-			wantFlag:   []string{"hunter2supersecret", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_TS"},
 		},
 		{
@@ -165,14 +165,14 @@ import "os"
 type Config struct{ APIKey string }
 
 func main() {
-	password := "hunter2supersecret"
+	password := "DnsG3tmHg6hTgv3Kd"
 	apiToken := os.Getenv("SHOULD_NOT_FLAG_GO")
 	awsKey := "` + awsToken + `"
-	cfg := Config{APIKey: "structsecretvalue123"}
+	cfg := Config{APIKey: "FbdH3hsPn3kJmh4Pt"}
 	_, _, _, _ = password, apiToken, awsKey, cfg
 }
 `,
-			wantFlag:   []string{"hunter2supersecret", awsToken, "structsecretvalue123"},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", awsToken, "FbdH3hsPn3kJmh4Pt"},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_GO"},
 		},
 		{
@@ -180,14 +180,14 @@ func main() {
 			ext:  ".java",
 			code: `class C {
   void m() {
-    String password = "hunter2supersecret";
+    String password = "DnsG3tmHg6hTgv3Kd";
     String apiToken = System.getenv("SHOULD_NOT_FLAG_JAVA");
-    String dbpw = props.getOrDefault("DB_PASSWORD", "javafallbacksecret123");
+    String dbpw = props.getOrDefault("DB_PASSWORD", "CfmC4dmKt4gMth2Rq");
     String awsKey = "` + awsToken + `";
   }
 }
 `,
-			wantFlag:   []string{"hunter2supersecret", "javafallbacksecret123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "CfmC4dmKt4gMth2Rq", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_JAVA"},
 		},
 		{
@@ -195,68 +195,68 @@ func main() {
 			ext:  ".cs",
 			code: `class C {
   void M() {
-    string password = "hunter2supersecret";
+    string password = "DnsG3tmHg6hTgv3Kd";
     string apiToken = System.Environment.GetEnvironmentVariable("SHOULD_NOT_FLAG_CS");
-    string dbpw = config.GetValue("DB_PASSWORD", "csfallbacksecret123");
+    string dbpw = config.GetValue("DB_PASSWORD", "MrpH5dtNs5jQvg4Mj");
     string awsKey = "` + awsToken + `";
   }
 }
 `,
-			wantFlag:   []string{"hunter2supersecret", "csfallbacksecret123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "MrpH5dtNs5jQvg4Mj", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_CS"},
 		},
 		{
 			name: "ruby",
 			ext:  ".rb",
-			code: `password = "hunter2supersecret"
+			code: `password = "DnsG3tmHg6hTgv3Kd"
 api_token = ENV["SHOULD_NOT_FLAG_RB"]
-creds = {"secret" => "dictsecretvalue123"}
-opts = {secret_key: "symsecretvalue123"}
-db_default = ENV["DB_PASSWORD"] || "rbfallbacksecret123"
+creds = {"secret" => "DjnR3mpFb3kSnc5Fd"}
+opts = {secret_key: "SfdT0hdBt5bKss4Tj"}
+db_default = ENV["DB_PASSWORD"] || "KgnB4sjKq9jKvb0Rg"
 secret_key = "hunter2dynamic#{tail}"
 aws_key = "` + awsToken + `"
 `,
-			wantFlag:   []string{"hunter2supersecret", "dictsecretvalue123", "symsecretvalue123", "rbfallbacksecret123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "DjnR3mpFb3kSnc5Fd", "SfdT0hdBt5bKss4Tj", "KgnB4sjKq9jKvb0Rg", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_RB", "hunter2dynamic#{tail}"},
 		},
 		{
 			name: "php",
 			ext:  ".php",
 			code: `<?php
-$password = "hunter2supersecret";
+$password = "DnsG3tmHg6hTgv3Kd";
 $apiToken = getenv("SHOULD_NOT_FLAG_PHP");
-$creds = ["secret" => "arraysecretvalue123"];
-$dbpw = $_ENV["DB_PASSWORD"] ?? "phpfallbacksecret123";
+$creds = ["secret" => "HkdJ8vsTg5fVgb3Gf"];
+$dbpw = $_ENV["DB_PASSWORD"] ?? "NvgF2knTr8vQkk4Vv";
 $secretKey = "hunter2dynamic$tail";
 $awsKey = "` + awsToken + `";
 `,
-			wantFlag:   []string{"hunter2supersecret", "arraysecretvalue123", "phpfallbacksecret123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "HkdJ8vsTg5fVgb3Gf", "NvgF2knTr8vQkk4Vv", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_PHP", "hunter2dynamic$tail"},
 		},
 		{
 			name: "kotlin",
 			ext:  ".kt",
-			code: `val password = "hunter2supersecret"
+			code: `val password = "DnsG3tmHg6hTgv3Kd"
 val apiToken = System.getenv("SHOULD_NOT_FLAG_KT")
-val dbpw = System.getenv("DB_PASSWORD") ?: "ktfallbacksecret123"
+val dbpw = System.getenv("DB_PASSWORD") ?: "CjfG2cfFk1qMks3Hf"
 val secretKey = "hunter2dynamic$tail"
 val awsKey = "` + awsToken + `"
 `,
-			wantFlag:   []string{"hunter2supersecret", "ktfallbacksecret123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "CjfG2cfFk1qMks3Hf", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_KT", "hunter2dynamic$tail"},
 		},
 		{
 			name: "rust",
 			ext:  ".rs",
 			code: `fn main() {
-    let password = "hunter2supersecret";
+    let password = "DnsG3tmHg6hTgv3Kd";
     let api_token = std::env::var("SHOULD_NOT_FLAG_RS").unwrap();
-    const SECRET_KEY: &str = "constsecretvalue123";
+    const SECRET_KEY: &str = "NcrG0dsTb7nGnc8Cm";
     let aws_key = "` + awsToken + `";
     let _ = (password, api_token, aws_key);
 }
 `,
-			wantFlag:   []string{"hunter2supersecret", "constsecretvalue123", awsToken},
+			wantFlag:   []string{"DnsG3tmHg6hTgv3Kd", "NcrG0dsTb7nGnc8Cm", awsToken},
 			wantAbsent: []string{"SHOULD_NOT_FLAG_RS"},
 		},
 	}
@@ -285,6 +285,91 @@ val awsKey = "` + awsToken + `"
 				}
 			}
 		})
+	}
+}
+
+// TestSourceValuePatternRetainsName checks that a value-shape match found in a
+// named assignment keeps the variable name rather than reporting an empty one.
+func TestSourceValuePatternRetainsName(t *testing.T) {
+	spec := sourceLangForExt(".py")
+	if spec == nil || defaultSourceEngine.langFor(spec) == nil {
+		t.Skip("python grammar unavailable")
+	}
+
+	code := "azure_url = \"https://myapp.azurewebsites.net/api\"\n"
+	findings := SourceDetector{}.Detect("sample.py", []byte(code), RuleSet{Rules: testRules(t)})
+
+	var info *Finding
+	for i := range findings {
+		if findings[i].Reason == "info:azure-app-service" {
+			info = &findings[i]
+		}
+	}
+	if info == nil {
+		t.Fatalf("expected info:azure-app-service finding, got %s", debugFindings(findings))
+	}
+	if info.Name != "azure_url" {
+		t.Errorf("name = %q, want azure_url (retained from the assignment)", info.Name)
+	}
+	if info.Level != levelInfo {
+		t.Errorf("level = %q, want %q", info.Level, levelInfo)
+	}
+	if info.Line != 1 {
+		t.Errorf("line = %d, want 1", info.Line)
+	}
+}
+
+// TestSourceFindingsAreSourceOrdered checks that the detector returns findings in
+// source-line order even though a value-shape finding (the URL on line 2) is
+// produced by a later pass than the name-driven FUNCTION_KEY on line 3. Source
+// order is what lets correlation see the URL as a prior finding.
+func TestSourceFindingsAreSourceOrdered(t *testing.T) {
+	spec := sourceLangForExt(".py")
+	if spec == nil || defaultSourceEngine.langFor(spec) == nil {
+		t.Skip("python grammar unavailable")
+	}
+
+	code := "BASE_URL = \"https://func-x.azurewebsites.net/api\"\n" +
+		"FUNCTION_KEY = \"6v-bssdfsdfdfbbbbb-rR2XzcbVAzFuV2exJw==\"\n"
+	findings := SourceDetector{}.Detect("function_url.py", []byte(code), RuleSet{Rules: testRules(t)})
+
+	if len(findings) != 2 {
+		t.Fatalf("want 2 findings, got %s", debugFindings(findings))
+	}
+	if findings[0].Name != "BASE_URL" || findings[1].Name != "FUNCTION_KEY" {
+		t.Fatalf("findings not in source order: %s", debugFindings(findings))
+	}
+}
+
+// TestFunctionURLCorrelatesUppercaseNames is the end-to-end check for the
+// reported case: an upper-case BASE_URL endpoint on an earlier line must fold
+// into the FUNCTION_KEY secret via the built-in function-url correlation.
+func TestFunctionURLCorrelatesUppercaseNames(t *testing.T) {
+	spec := sourceLangForExt(".py")
+	if spec == nil || defaultSourceEngine.langFor(spec) == nil {
+		t.Skip("python grammar unavailable")
+	}
+
+	set := RuleSet{Rules: testRules(t), Correlations: mustCorrelations(t, nil)}
+	code := "BASE_URL = \"https://func-x.azurewebsites.net/api\"\n" +
+		"FUNCTION_KEY = \"6v-bssdfsdfdfbbbbb-rR2XzcbVAzFuV2exJw==\"\n"
+	findings := correlateFindings(
+		SourceDetector{}.Detect("function_url.py", []byte(code), set),
+		set.Correlations,
+	)
+
+	if len(findings) != 1 {
+		t.Fatalf("want 1 root finding (URL folded in), got %s", debugFindings(findings))
+	}
+	primary := findings[0]
+	if primary.Name != "FUNCTION_KEY" {
+		t.Fatalf("primary = %q, want FUNCTION_KEY", primary.Name)
+	}
+	if !hasTag(primary.Tags, "function-url") {
+		t.Errorf("primary missing function-url tag: %v", primary.Tags)
+	}
+	if len(primary.Correlated) != 1 || primary.Correlated[0].Name != "BASE_URL" {
+		t.Fatalf("want BASE_URL embedded as secondary, got %+v", primary.Correlated)
 	}
 }
 

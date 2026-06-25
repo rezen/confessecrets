@@ -179,3 +179,11 @@ filter:
   - id: value-pattern
     action: tag
     filter: 'reason startsWith "gitleaks:"'
+
+# Extra stopwords, applied across all rules on top of the built-in set (gitleaks'
+# DefaultStopWords). A name-driven candidate is dropped when its value contains
+# (case-insensitively, by substring) any built-in or listed stopword. Use this to
+# silence project-specific placeholders. Leave empty for the built-in set only.
+stopwords: []
+  # - redacted
+  # - internalfixture

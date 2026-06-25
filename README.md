@@ -106,25 +106,34 @@ included so you can correlate without storing the secret itself.
 
 ```json
 {
-  "file": "config/app.env",
-  "path": "line:3",
+  "file": "app/config.py",
+  "line": 12,
+  "lang": "python",
+  "level": "high",
   "name_path": "value_pattern",
   "value_path": "value_pattern",
-  "name": "ci_note",
+  "name": "ci_token",
   "value": "ghp_********wxyz",
   "raw_value": "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
   "value_sha256": "6675cd0c…",
   "entropy": 4.71,
   "name_value_distance": 38,
   "reason": "gitleaks:github-pat",
-  "tags": ["lang:dotenv", "value-pattern"]
+  "tags": ["value-pattern"]
 }
 ```
 
-Every finding carries a `tags` array. It always includes a `lang:<name>` tag for
-the source language or config format it came from (e.g. `lang:python`,
-`lang:json`, `lang:dotenv`), plus the `id` of any `tag`-action [filter](#custom-filters)
-the finding matched. The field is omitted when a finding has no tags.
+Every finding carries a `lang` field naming the source language or config format
+it came from (e.g. `python`, `json`, `dotenv`), and a `level`: `high` for a
+detected secret (the default) or `info` for an informational match such as a
+recognized service URL (`info:azure-app-service`, `info:aws-lambda-url`). For the
+line-oriented formats and source code the 1-based `line` is set and the redundant
+`path` is omitted; structured documents (cleanly parsed JSON/YAML/INI) instead
+carry a `path` locator like `$.db.password` and omit `line`. A value-shape match
+in a named assignment keeps that name (e.g. `ci_token` above), not an empty one.
+
+The `tags` array holds the `id` of any `tag`-action [filter](#custom-filters) the
+finding matched and any correlation tag. It is omitted when a finding has no tags.
 
 Every finding carries the `entropy` field: the Shannon entropy (bits/symbol) of
 the raw value, rounded to two decimals — handy for triage and tuning the
@@ -140,9 +149,23 @@ drop name-driven findings at or above a chosen similarity (`0` disables it).
 
 The `reason` field explains why it was flagged — e.g. `jwt_indicator`,
 `url_credentials`, `private_key_indicator`, a name-driven message, or
-`gitleaks:<rule-id>` for a value-pattern match. JWT values also carry a `meta`
-object with parsed claims (`issuer`, `iat`, `expiration`, `is_expired`, and any
-remaining claims under `extra`).
+`gitleaks:<rule-id>` for a value-pattern match. Findings can also carry an
+optional `meta` object with value-derived context:
+
+- `jwt` — for JSON Web Token values: the decoded `header`, the parsed claims
+  (`issuer`, `iat`, `expiration`, `is_expired`), and any remaining claims under
+  `extra`.
+- `username`, `host`, `url` — derived from URL credentials (`user:pass@host`) and
+  connection strings.
+- `client_id`, `client_key` — derived from connection strings and from correlated
+  partner findings (e.g. the `client_id` paired with a `client_secret`).
+
+All `meta` fields are optional and omitted when absent.
+
+A finding may also carry a `correlated` array holding partner findings folded into
+it by a correlation rule (e.g. the `client_id` paired with this `client_secret`).
+Correlated partners are always in the same file as their primary, so each embedded
+entry omits the redundant `file` field and keeps only its in-file location (`path`).
 
 ## Scanning source code
 
@@ -242,6 +265,11 @@ rules:
     ignore_value_patterns:
       - '^ENC\[.*\]$'
       - '^arn:aws:secretsmanager:'
+
+# Extra stopwords applied across all rules, on top of the built-in set (see below).
+stopwords:
+  - redacted
+  - internalfixture
 ```
 
 Value-pattern (gitleaks) scanning is built in and always on; it honors
@@ -271,6 +299,25 @@ A value that merely echoes its key name — `password="password"`,
 as a placeholder and dropped automatically. The comparison ignores case,
 separators, camelCase, and common filler words ("your", "my", "example", …), so
 these obvious fakes never count as findings.
+
+A value that is, or embeds, a **variable/template placeholder** is likewise
+dropped — the real secret is substituted in later, so the literal text is not a
+credential. The brace/paren forms `${DB_HOST}`, `$(secret)`, and `{{ db_host }}`
+are recognized anywhere in the value (e.g. `password=${PW}` in a connection
+string); the single-character `@DB_HOST@` and `%DB_HOST%` forms are recognized
+only as a whole value, since `@` and `%` also occur inside genuine secrets.
+
+A name-driven candidate is also dropped when its value contains a **stopword** —
+a common word or placeholder fragment that marks it as a non-secret. The built-in
+set is gitleaks'
+[`DefaultStopWords`](https://github.com/gitleaks/gitleaks/blob/master/cmd/generate/config/rules/stopwords.go),
+matched the same way gitleaks does: case-insensitively, by substring (a value
+containing `changeme`, `example`, `test`, … anywhere is skipped). The built-in
+set is always on; add project-specific entries with the top-level `stopwords`
+list, which applies across all rules (also matched case-insensitively by
+substring). Values carrying a definite secret
+reason (JWT, private key, URL credentials) and built-in gitleaks value patterns
+are matched before this check, so a real token is never lost to a stopword.
 
 ### Custom value-pattern detectors
 
@@ -396,6 +443,28 @@ Semantics:
 ```sh
 go test ./...
 go vet ./...
+```
+
+### Sample golden-file tests
+
+`TestSamples` (in `pkg/scanner/samples_test.go`) is a golden-file suite driven by
+the `samples/` directory. Every sample (e.g. `samples/function_url.py`) has a
+sibling `.verify` file (`samples/function_url.verify`) holding the exact NDJSON
+the scanner should emit for it — one JSON finding per line. The test scans each
+sample with the repo's `config.yaml` and asserts the output matches its `.verify`
+byte for byte.
+
+```sh
+# Run just the sample suite (one subtest per sample)
+go test ./pkg/scanner/ -run TestSamples -v
+```
+
+To add a case, drop in a sample file plus its `.verify`; the test picks it up
+automatically. To seed a new sample's `.verify` — or refresh expectations after
+an intended behavior change — regenerate the golden files and review the diff:
+
+```sh
+go test ./pkg/scanner/ -run TestSamples -update
 ```
 
 ## Project layout

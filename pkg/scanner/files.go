@@ -81,6 +81,22 @@ func CompileRules(configs []RuleConfig) ([]Rule, error) {
 	return rules, nil
 }
 
+// compileStopwords normalizes the configured extra stopwords, lowercasing and
+// trimming each entry so they can be matched (by substring containment)
+// case-insensitively against a value. Empty entries are skipped; it returns nil
+// when none remain.
+func compileStopwords(words []string) []string {
+	var out []string
+	for _, w := range words {
+		w = strings.ToLower(strings.TrimSpace(w))
+		if w == "" {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
 // compileNameRegexes compiles a rule's name_regexes patterns, preserving order.
 func compileNameRegexes(rc RuleConfig) ([]NamedRegex, error) {
 	var compiled []NamedRegex
@@ -118,6 +134,14 @@ func CompileConfig(cfg Config) (RuleSet, error) {
 	correlations, err := CompileCorrelations(cfg.Correlations)
 	if err != nil {
 		return RuleSet{}, err
+	}
+
+	// Stopwords are a global setting: normalize once and apply the same extra
+	// list to every rule, since isLikelySecretValue checks them per-rule.
+	if stopwords := compileStopwords(cfg.Stopwords); stopwords != nil {
+		for i := range rules {
+			rules[i].Stopwords = stopwords
+		}
 	}
 
 	return RuleSet{Rules: rules, Detectors: detectors, Filters: filters, Correlations: correlations}, nil
@@ -196,38 +220,38 @@ func ScanFile(path string, set RuleSet, opts ScanOptions) ([]Finding, error) {
 
 	findings := detector.Detect(path, data, set)
 	findings = correlateFindings(findings, set.Correlations)
-	if tag := languageTag(path); tag != "" {
+	if lang := languageName(path); lang != "" {
 		for i := range findings {
-			findings[i].Tags = appendTag(findings[i].Tags, tag)
+			findings[i].Lang = lang
 		}
 	}
 
 	return applyFilters(findings, set.Filters, opts.IncludeFiltered)
 }
 
-// languageTag returns the "lang:<name>" tag for path's file type — the source
-// language for code files (e.g. "lang:python") or the format for structured
-// config (e.g. "lang:json") — or "" for unsupported types.
-func languageTag(path string) string {
+// languageName returns the bare source language or config format for path's file
+// type (e.g. "python", "json"), used to populate the Finding.Lang field — or ""
+// for unsupported types.
+func languageName(path string) string {
 	if isEnvFile(path) {
-		return "lang:dotenv"
+		return "dotenv"
 	}
 
 	if spec := sourceLangForExt(strings.ToLower(filepath.Ext(path))); spec != nil {
-		return "lang:" + spec.name
+		return spec.name
 	}
 
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json", ".jsonc":
-		return "lang:json"
+		return "json"
 	case ".yaml", ".yml":
-		return "lang:yaml"
+		return "yaml"
 	case ".xml", ".config":
-		return "lang:xml"
+		return "xml"
 	case ".properties":
-		return "lang:properties"
+		return "properties"
 	case ".ini":
-		return "lang:ini"
+		return "ini"
 	}
 
 	return ""

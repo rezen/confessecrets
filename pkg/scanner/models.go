@@ -21,6 +21,12 @@ type Config struct {
 	// file; on a match the primary embeds the partners (which are dropped from the
 	// top-level results) and all are tagged. See CorrelationConfig.
 	Correlations []CorrelationConfig `yaml:"correlations"`
+	// Stopwords are extra non-secret words applied across all rules. As with the
+	// built-in stopword set (gitleaks' DefaultStopWords), a name-driven candidate
+	// is dropped when its value contains (case-insensitively) any of these as a
+	// substring. They extend, never replace, the always-on built-in set. Use this
+	// to silence project-specific placeholders such as "redacted".
+	Stopwords []string `yaml:"stopwords"`
 }
 
 // Filter actions decide what happens to a finding a filter rule matches.
@@ -164,6 +170,11 @@ type Rule struct {
 	IgnoreNamePatterns     []*regexp.Regexp
 	IgnoreValuePrefixes    []string
 	IgnoreValuePatterns    []*regexp.Regexp
+	// Stopwords are the effective extra non-secret words (lowercased) checked by
+	// substring containment on top of the built-in stopword set. They come from
+	// the global Config.Stopwords and are copied onto every rule at compile time
+	// (see CompileConfig). Nil when none are configured.
+	Stopwords []string
 }
 
 // NamedRegex is a compiled name pattern with its optional label.
@@ -289,8 +300,27 @@ func (s RuleSet) prevWindow() int {
 }
 
 type Finding struct {
-	File                string  `json:"file"`
-	Path                string  `json:"path"`
+	// File is the path to the source file. Top-level findings always set it; it is
+	// cleared (and so omitted) on findings embedded under Correlated, since a
+	// correlated partner is always in the same file as its primary — only its
+	// in-file location (Path) is meaningful there.
+	File string `json:"file,omitempty"`
+	// Path is the in-document location: a structured locator such as "$.db.password"
+	// for parsed config, or an INI "[section] line:N". A bare "line:N" is omitted as
+	// redundant, since File and Line already carry that location.
+	Path string `json:"path,omitempty"`
+	// Line is the 1-based source line the finding sits on, derived from Path for
+	// the line-oriented formats (dotenv, properties, ini, and the line-based JSON/
+	// YAML fallbacks). It is 0 (and omitted) for structured paths like "$.a.b" that
+	// carry no line number.
+	Line int `json:"line,omitempty"`
+	// Lang is the source language or config format of the file the finding came
+	// from (e.g. "python", "json"). Omitted for unsupported file types.
+	Lang string `json:"lang,omitempty"`
+	// Level is the severity of the finding: "high" for a detected secret (the
+	// default) or "info" for an informational match such as a recognized service
+	// URL that is worth surfacing but is not itself a credential.
+	Level               string  `json:"level,omitempty"`
 	NamePath            string  `json:"name_path"`
 	ValuePath           string  `json:"value_path"`
 	Name                string  `json:"name"`
@@ -300,9 +330,10 @@ type Finding struct {
 	Entropy             float64 `json:"entropy"`
 	NameValueSimilarity float64 `json:"name_value_similarity"`
 	Reason              string  `json:"reason"`
-	// Tags are free-form labels attached to the finding: a "lang:<name>" tag for
-	// the source language or config format, plus the ID of any "tag"-action filter
-	// rule the finding matched. Omitted when empty.
+	// Tags are free-form labels attached to the finding: the ID of any "tag"-action
+	// filter rule the finding matched, and any correlation tag. The source language
+	// or config format is carried in the dedicated Lang field rather than a tag.
+	// Omitted when empty.
 	Tags []string `json:"tags,omitempty"`
 	// Filtered is set when the finding matched the config filter but was retained
 	// (via -show-filtered) instead of dropped; FilteredReason holds the expression
@@ -317,13 +348,31 @@ type Finding struct {
 	Correlated []Finding `json:"correlated,omitempty"`
 }
 
-// Meta holds optional, value-derived metadata. It is currently populated from
-// JWT claims when the finding's value is a JSON Web Token; all fields are
-// optional and omitted from output when absent.
-type Meta struct {
+// JWT holds claims and the header decoded from a JSON Web Token value. The
+// standard iss/iat/exp claims map to dedicated fields; the decoded header
+// (alg/typ/kid, ...) lives in Header and every other claim in Extra. All fields
+// are optional and omitted from output when absent.
+type JWT struct {
 	Issuer     string                 `json:"issuer,omitempty"`
 	Iat        int64                  `json:"iat,omitempty"`
 	Expiration int64                  `json:"expiration,omitempty"`
 	IsExpired  bool                   `json:"is_expired,omitempty"`
+	Header     map[string]interface{} `json:"header,omitempty"`
 	Extra      map[string]interface{} `json:"extra,omitempty"`
+}
+
+// Meta holds optional, value-derived metadata attached to a finding. JWT is
+// populated from JSON Web Token values; the identity fields (Username, Host,
+// URL, ClientID, ClientKey) are derived from URL credentials, connection-string
+// values, and correlated partner findings. All fields are optional and omitted
+// from output when absent.
+type Meta struct {
+	JWT       *JWT                   `json:"jwt,omitempty"`
+	Username  string                 `json:"username,omitempty"`
+	AppId     string                 `json:"app_id,omitempty"`
+	Host      string                 `json:"host,omitempty"`
+	URL       string                 `json:"url,omitempty"`
+	ClientID  string                 `json:"client_id,omitempty"`
+	ClientKey string                 `json:"client_key,omitempty"`
+	Extra     map[string]interface{} `json:"extra,omitempty"`
 }

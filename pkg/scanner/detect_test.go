@@ -109,6 +109,9 @@ func TestIsLikelySecretValue(t *testing.T) {
 		{"shell command substitution", "$(cat /run/secrets/token)", false},
 		{"shell var", "${DATABASE_PASSWORD}", false},
 		{"go template", "{{ .Values.password }}", false},
+		{"at-delimited var", "@DB_PASSWORD@", false},
+		{"percent-delimited var", "%DB_PASSWORD%", false},
+		{"embedded shell var", "jdbc:mysql://host/db?password=${PW}", false},
 
 		// Negative: natural language sentences are not secrets.
 		{"sentence", "This is the default configuration value here", false},
@@ -148,6 +151,46 @@ func TestIsLikelySecretValue(t *testing.T) {
 	}
 }
 
+// TestIsTemplatePlaceholder covers the variable/template placeholder detection
+// used to skip substitution targets: the brace/paren forms match anywhere in the
+// value, while the single-char @VAR@ / %VAR% forms match only a whole value so
+// they don't suppress real secrets that merely contain '@' or '%'.
+func TestIsTemplatePlaceholder(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		// Brace/paren forms — matched anywhere in the value.
+		{"shell var", "${DB_HOST}", true},
+		{"shell var quoted", `"${DB_HOST}"`, true},
+		{"command substitution", "$(cat /run/secrets/pw)", true},
+		{"mustache", "{{ db_host }}", true},
+		{"go template", "{{ .Values.password }}", true},
+		{"embedded shell var", "jdbc:mysql://h/db?password=${PW}", true},
+
+		// Single-char forms — only a whole-value match counts.
+		{"at var", "@DB_HOST@", true},
+		{"percent var", "%DB_HOST%", true},
+		{"at var with dots", "@project.version@", true},
+
+		// Negative: not placeholders, and embedded @/% that must not over-match.
+		{"plain secret", "sk_live_8Fh2kLmQ9zXc4Tg", false},
+		{"email-ish", "user@example.com", false},
+		{"url-encoded password", "p%41ss%2Fword", false},
+		{"embedded at not whole value", "host=@DB_HOST@/db", false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTemplatePlaceholder(tt.value); got != tt.want {
+				t.Errorf("isTemplatePlaceholder(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsLikelySecretValueEntropyGate covers the rule-configured MinEntropy gate:
 // once set, a low-variety value that clears the length and wordlist checks is
 // still dropped, while a high-variety value of the same length passes.
@@ -174,6 +217,64 @@ func TestIsLikelySecretValueEntropyGate(t *testing.T) {
 	// is low-variety, because classifySecretReason short-circuits first.
 	if !isLikelySecretValue("token", "-----BEGIN RSA PRIVATE KEY-----", gated) {
 		t.Errorf("definite-secret value should bypass the entropy gate")
+	}
+}
+
+// TestStopwords covers the built-in and configurable stopwords: a value is
+// dropped when it contains (case-insensitively, by substring, as in gitleaks)
+// any built-in or configured extra stopword, and kept otherwise.
+func TestStopwords(t *testing.T) {
+	// A built-in gitleaks stopword is matched by substring even when embedded.
+	open := Rule{MinValueLen: 8}
+	if isLikelySecretValue("token", "Kq7changemeVp9", open) {
+		t.Errorf("value containing a built-in stopword should be rejected")
+	}
+	// A value clear of any built-in stopword passes without extra config.
+	if !isLikelySecretValue("token", "Kq7Vbz9XpQr", open) {
+		t.Errorf("stopword-free value should pass")
+	}
+
+	// Extra stopwords extend the built-in set and are matched the same way:
+	// case-insensitively, by substring.
+	gated := Rule{MinValueLen: 8, Stopwords: compileStopwords([]string{"redacted", "tbd"})}
+	if isLikelySecretValue("token", "Kq7redactedVp9", gated) {
+		t.Errorf("value containing a configured stopword should be rejected")
+	}
+	if isLikelySecretValue("token", "Kq7REDACTEDVp9", gated) {
+		t.Errorf("configured stopword should match case-insensitively")
+	}
+	// Built-ins still apply when extras are configured.
+	if isLikelySecretValue("token", "Kq7changemeVp9", gated) {
+		t.Errorf("built-in stopword should still be rejected")
+	}
+	// A value matching neither built-in nor extra stopwords passes.
+	if !isLikelySecretValue("token", "Kq7Vbz9XpQr", gated) {
+		t.Errorf("non-stopword value should pass")
+	}
+}
+
+// TestCompileConfigStopwordsAreGlobal verifies the top-level stopwords setting is
+// applied to every compiled rule (it is a global setting, not per-rule).
+func TestCompileConfigStopwordsAreGlobal(t *testing.T) {
+	set, err := CompileConfig(Config{
+		Rules: []RuleConfig{
+			{NameRegexes: []NameRegexEntry{{Regex: `secret`}}},
+			{NameRegexes: []NameRegexEntry{{Regex: `token`}}},
+		},
+		Stopwords: []string{"Redacted", " tbd "},
+	})
+	if err != nil {
+		t.Fatalf("CompileConfig: %v", err)
+	}
+
+	if len(set.Rules) != 2 {
+		t.Fatalf("got %d rules, want 2", len(set.Rules))
+	}
+	for i, r := range set.Rules {
+		// Entries are normalized (lowercased, trimmed) and applied to each rule.
+		if len(r.Stopwords) != 2 || r.Stopwords[0] != "redacted" || r.Stopwords[1] != "tbd" {
+			t.Errorf("rule %d stopwords = %v, want [redacted tbd]", i, r.Stopwords)
+		}
 	}
 }
 
@@ -223,19 +324,20 @@ func TestNameValueSimilarity(t *testing.T) {
 func TestIsLikelySecretValueSimilarityGate(t *testing.T) {
 	gated := Rule{MinValueLen: 8, MaxNameValueSimilarity: 0.85}
 
-	// Near-echo: "password1" is highly similar to "password" -> dropped.
-	if isLikelySecretValue("password", "password1", gated) {
+	// Near-echo: "Kq7Vbz9Xp1" is highly similar to "Kq7Vbz9Xp" -> dropped. (An
+	// opaque, stopword-free pair is used so only the similarity gate is at play.)
+	if isLikelySecretValue("Kq7Vbz9Xp", "Kq7Vbz9Xp1", gated) {
 		t.Errorf("near-echo value should be dropped by the similarity gate")
 	}
 
 	// A real secret is dissimilar from its key name -> kept.
-	if !isLikelySecretValue("password", "Xk9$mQ2vLp7wRt4z", gated) {
+	if !isLikelySecretValue("Kq7Vbz9Xp", "Xk9$mQ2vLp7wRt4z", gated) {
 		t.Errorf("dissimilar value should pass the similarity gate")
 	}
 
 	// Without the gate the near-echo would survive.
 	open := Rule{MinValueLen: 8}
-	if !isLikelySecretValue("password", "password1", open) {
+	if !isLikelySecretValue("Kq7Vbz9Xp", "Kq7Vbz9Xp1", open) {
 		t.Errorf("near-echo should pass when the similarity gate is disabled")
 	}
 }
@@ -524,6 +626,85 @@ func TestDetectValuePatternsRegardlessOfName(t *testing.T) {
 	}
 }
 
+func TestDetectInfoURLPatterns(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantID  string
+		wantHit bool
+	}{
+		{"azure app service", "https://myapp.azurewebsites.net/api", "azure-app-service", true},
+		{"azure bare host", "myapp-prod.azurewebsites.net", "azure-app-service", true},
+		{"aws lambda url", "https://abc123def.lambda-url.us-east-1.on.aws/", "aws-lambda-url", true},
+		{"plain url not flagged", "https://example.com/path", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:7", Name: "endpoint", Value: tc.value}, RuleSet{})
+
+			if !tc.wantHit {
+				if len(findings) != 0 {
+					t.Fatalf("expected no finding for %q, got %+v", tc.value, findings)
+				}
+				return
+			}
+
+			if len(findings) != 1 {
+				t.Fatalf("expected one finding for %q, got %+v", tc.value, findings)
+			}
+			f := findings[0]
+			if f.Level != levelInfo {
+				t.Errorf("level = %q, want %q", f.Level, levelInfo)
+			}
+			if f.Reason != "info:"+tc.wantID {
+				t.Errorf("reason = %q, want info:%s", f.Reason, tc.wantID)
+			}
+			if f.Line != 7 {
+				t.Errorf("line = %d, want 7", f.Line)
+			}
+		})
+	}
+}
+
+func TestInfoURLYieldsToSecretValue(t *testing.T) {
+	// A secret query parameter on a recognized service URL must keep the value a
+	// high-severity finding rather than downgrading it to info — but that secret
+	// classification is name/structure-driven, so here we only assert the bare
+	// endpoint URL is the info case while a gitleaks token in the same value wins.
+	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:1", Name: "x", Value: "AKIAIOSFODNN7EXAMPLE.lambda-url.us-east-1.on.aws"}, RuleSet{})
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding, got %+v", findings)
+	}
+	if findings[0].Level != levelHigh || findings[0].Reason != "gitleaks:aws-access-token" {
+		t.Errorf("secret token must win over info URL, got level=%q reason=%q", findings[0].Level, findings[0].Reason)
+	}
+}
+
+func TestLineFromPath(t *testing.T) {
+	cases := map[string]int{
+		"line:2":               2,
+		"[credentials] line:5": 5,
+		"$.db.password":        0,
+		"":                     0,
+	}
+	for path, want := range cases {
+		if got := lineFromPath(path); got != want {
+			t.Errorf("lineFromPath(%q) = %d, want %d", path, got, want)
+		}
+	}
+}
+
+func TestNewFindingDefaultsToHighLevel(t *testing.T) {
+	f := newFinding("f", "line:3", "n", "v", "name", "value", "reason")
+	if f.Level != levelHigh {
+		t.Errorf("level = %q, want %q", f.Level, levelHigh)
+	}
+	if f.Line != 3 {
+		t.Errorf("line = %d, want 3", f.Line)
+	}
+}
+
 func TestDetectValuePatternsSuppressed(t *testing.T) {
 	rules, err := CompileRules([]RuleConfig{{
 		NameRegexes:         []NameRegexEntry{{Regex: `(?i)secret`}},
@@ -760,8 +941,11 @@ func TestDetectPropertiesLineContinuation(t *testing.T) {
 	if findings[0].RawValue != "abcd1234efgh5678ijkl9012" {
 		t.Errorf("value = %q, want joined continuation", findings[0].RawValue)
 	}
-	if findings[0].Path != "line:2" {
-		t.Errorf("path = %q, want line:2 (start of logical line)", findings[0].Path)
+	if findings[0].Line != 2 {
+		t.Errorf("line = %d, want 2 (start of logical line)", findings[0].Line)
+	}
+	if findings[0].Path != "" {
+		t.Errorf("path = %q, want empty (bare line:N is redundant with Line)", findings[0].Path)
 	}
 }
 
@@ -785,8 +969,8 @@ func TestDetectINILines(t *testing.T) {
 		"host = localhost",                      // not a secret name
 		"",
 		"[auth]",
-		"client_secret: longsecretvalue123", // colon separator
-		"note = hi",                         // name matches but value too short
+		"client_secret: MnvK3jqQc8gMst3Bc", // colon separator
+		"note = hi",                        // name matches but value too short
 	}, "\n")
 
 	findings := detectINILines("app.ini", []byte(content), RuleSet{Rules: rules})
@@ -795,7 +979,7 @@ func TestDetectINILines(t *testing.T) {
 	want := map[string]string{
 		"password":      "hunter2secret",
 		"api_token":     "sk_live_8Fh2kLmQ9zXc4Tg",
-		"client_secret": "longsecretvalue123",
+		"client_secret": "MnvK3jqQc8gMst3Bc",
 	}
 
 	if len(got) != len(want) {
@@ -1003,7 +1187,7 @@ func TestDetectXMLTextReason(t *testing.T) {
 	}
 }
 
-func TestParseJWTMeta(t *testing.T) {
+func TestParseJWT(t *testing.T) {
 	// Header + payload {"iss":"auth.example.com","iat":1700000000,"exp":1700003600}
 	// base64url-encoded, signature omitted (irrelevant to claim parsing).
 	const header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
@@ -1011,46 +1195,59 @@ func TestParseJWTMeta(t *testing.T) {
 	jwt := header + "." + payload + ".sig"
 
 	t.Run("extracts claims", func(t *testing.T) {
-		meta := parseJWTMeta(jwt)
-		if meta == nil {
-			t.Fatal("expected meta, got nil")
+		j := parseJWT(jwt)
+		if j == nil {
+			t.Fatal("expected jwt, got nil")
 		}
-		if meta.Issuer != "auth.example.com" {
-			t.Errorf("Issuer = %q, want auth.example.com", meta.Issuer)
+		if j.Issuer != "auth.example.com" {
+			t.Errorf("Issuer = %q, want auth.example.com", j.Issuer)
 		}
-		if meta.Iat != 1700000000 {
-			t.Errorf("Iat = %d, want 1700000000", meta.Iat)
+		if j.Iat != 1700000000 {
+			t.Errorf("Iat = %d, want 1700000000", j.Iat)
 		}
-		if meta.Expiration != 1700003600 {
-			t.Errorf("Expiration = %d, want 1700003600", meta.Expiration)
+		if j.Expiration != 1700003600 {
+			t.Errorf("Expiration = %d, want 1700003600", j.Expiration)
 		}
 		// exp is in 2023, so the token is expired relative to now.
-		if !meta.IsExpired {
+		if !j.IsExpired {
 			t.Errorf("IsExpired = false, want true for a 2023 exp")
+		}
+	})
+
+	t.Run("decodes header", func(t *testing.T) {
+		j := parseJWT(jwt)
+		if j == nil {
+			t.Fatal("expected jwt, got nil")
+		}
+		if j.Header["alg"] != "HS256" {
+			t.Errorf("Header[alg] = %v, want HS256", j.Header["alg"])
+		}
+		if j.Header["typ"] != "JWT" {
+			t.Errorf("Header[typ] = %v, want JWT", j.Header["typ"])
 		}
 	})
 
 	t.Run("expired token", func(t *testing.T) {
 		tok := makeJWT(t, map[string]any{"iss": "x", "exp": time.Now().Add(-time.Hour).Unix()})
-		meta := parseJWTMeta(tok)
-		if meta == nil || !meta.IsExpired {
-			t.Errorf("expected IsExpired true, got %+v", meta)
+		j := parseJWT(tok)
+		if j == nil || !j.IsExpired {
+			t.Errorf("expected IsExpired true, got %+v", j)
 		}
 	})
 
 	t.Run("valid (unexpired) token", func(t *testing.T) {
 		tok := makeJWT(t, map[string]any{"iss": "x", "exp": time.Now().Add(time.Hour).Unix()})
-		meta := parseJWTMeta(tok)
-		if meta == nil || meta.IsExpired {
-			t.Errorf("expected IsExpired false, got %+v", meta)
+		j := parseJWT(tok)
+		if j == nil || j.IsExpired {
+			t.Errorf("expected IsExpired false, got %+v", j)
 		}
 	})
 
 	t.Run("no exp claim is not expired", func(t *testing.T) {
 		tok := makeJWT(t, map[string]any{"iss": "x", "iat": 1700000000})
-		meta := parseJWTMeta(tok)
-		if meta == nil || meta.IsExpired {
-			t.Errorf("expected IsExpired false without exp, got %+v", meta)
+		j := parseJWT(tok)
+		if j == nil || j.IsExpired {
+			t.Errorf("expected IsExpired false without exp, got %+v", j)
 		}
 	})
 
@@ -1063,65 +1260,116 @@ func TestParseJWTMeta(t *testing.T) {
 			"role": "admin",
 		})
 
-		meta := parseJWTMeta(tok)
-		if meta == nil {
-			t.Fatal("expected meta, got nil")
+		j := parseJWT(tok)
+		if j == nil {
+			t.Fatal("expected jwt, got nil")
 		}
 
 		// Reserved claims stay out of Extra.
-		if _, ok := meta.Extra["iss"]; ok {
+		if _, ok := j.Extra["iss"]; ok {
 			t.Error("iss should not appear in Extra")
 		}
-		if _, ok := meta.Extra["exp"]; ok {
+		if _, ok := j.Extra["exp"]; ok {
 			t.Error("exp should not appear in Extra")
 		}
 
 		// Remaining claims land in Extra.
-		if meta.Extra["sub"] != "user-123" {
-			t.Errorf("Extra[sub] = %v, want user-123", meta.Extra["sub"])
+		if j.Extra["sub"] != "user-123" {
+			t.Errorf("Extra[sub] = %v, want user-123", j.Extra["sub"])
 		}
-		if meta.Extra["aud"] != "my-api" {
-			t.Errorf("Extra[aud] = %v, want my-api", meta.Extra["aud"])
+		if j.Extra["aud"] != "my-api" {
+			t.Errorf("Extra[aud] = %v, want my-api", j.Extra["aud"])
 		}
-		if meta.Extra["role"] != "admin" {
-			t.Errorf("Extra[role] = %v, want admin", meta.Extra["role"])
+		if j.Extra["role"] != "admin" {
+			t.Errorf("Extra[role] = %v, want admin", j.Extra["role"])
 		}
-		if len(meta.Extra) != 3 {
-			t.Errorf("Extra = %v, want exactly 3 entries", meta.Extra)
-		}
-	})
-
-	t.Run("no extra when only standard claims", func(t *testing.T) {
-		meta := parseJWTMeta(jwt)
-		if meta == nil {
-			t.Fatal("expected meta, got nil")
-		}
-		if meta.Extra != nil {
-			t.Errorf("Extra = %v, want nil for standard-only claims", meta.Extra)
+		if len(j.Extra) != 3 {
+			t.Errorf("Extra = %v, want exactly 3 entries", j.Extra)
 		}
 	})
 
 	t.Run("token with Bearer prefix", func(t *testing.T) {
-		if meta := parseJWTMeta("Bearer " + jwt); meta == nil || meta.Issuer != "auth.example.com" {
-			t.Errorf("expected issuer from prefixed token, got %+v", meta)
+		if j := parseJWT("Bearer " + jwt); j == nil || j.Issuer != "auth.example.com" {
+			t.Errorf("expected issuer from prefixed token, got %+v", j)
 		}
 	})
 
 	t.Run("non-jwt value", func(t *testing.T) {
-		if meta := parseJWTMeta("sk_live_8Fh2kLmQ9zXc4Tg"); meta != nil {
-			t.Errorf("expected nil meta for non-jwt, got %+v", meta)
+		if j := parseJWT("sk_live_8Fh2kLmQ9zXc4Tg"); j != nil {
+			t.Errorf("expected nil jwt for non-jwt, got %+v", j)
 		}
 	})
 
 	t.Run("finding carries meta", func(t *testing.T) {
 		f := newFinding("f", "$", "k", "v", "token", jwt, "jwt_indicator")
-		if f.Meta == nil || f.Meta.Issuer != "auth.example.com" {
-			t.Errorf("finding meta = %+v, want issuer auth.example.com", f.Meta)
+		if f.Meta == nil || f.Meta.JWT == nil || f.Meta.JWT.Issuer != "auth.example.com" {
+			t.Errorf("finding meta = %+v, want jwt issuer auth.example.com", f.Meta)
 		}
 
 		plain := newFinding("f", "$", "k", "v", "pwd", "hunter2secret", "x")
 		if plain.Meta != nil {
 			t.Errorf("non-jwt finding should have nil meta, got %+v", plain.Meta)
+		}
+	})
+}
+
+func TestParseURLMeta(t *testing.T) {
+	t.Run("url with credentials", func(t *testing.T) {
+		var meta Meta
+		if !parseURLMeta("postgres://admin:s3cret@db.example.com:5432/app", &meta) {
+			t.Fatal("expected true for URL with credentials")
+		}
+		if meta.Username != "admin" {
+			t.Errorf("Username = %q, want admin", meta.Username)
+		}
+		if meta.Host != "db.example.com:5432" {
+			t.Errorf("Host = %q, want db.example.com:5432", meta.Host)
+		}
+		if meta.URL == "" {
+			t.Error("URL should be set")
+		}
+	})
+
+	t.Run("url without credentials", func(t *testing.T) {
+		var meta Meta
+		if parseURLMeta("https://example.com/path", &meta) {
+			t.Errorf("expected false for URL without credentials, got %+v", meta)
+		}
+	})
+
+	t.Run("non-url value", func(t *testing.T) {
+		var meta Meta
+		if parseURLMeta("not a url", &meta) {
+			t.Errorf("expected false for non-URL, got %+v", meta)
+		}
+	})
+}
+
+func TestParseConnStringMeta(t *testing.T) {
+	t.Run("populates fields", func(t *testing.T) {
+		var meta Meta
+		conn := "Server=tcp:db.example.net,1433;User Id=svc;Password=p@ss;Client Id=abc-123;Client Secret=topsecret"
+		if !parseConnStringMeta(conn, &meta) {
+			t.Fatal("expected true for connection string")
+		}
+		if meta.Username != "svc" {
+			t.Errorf("Username = %q, want svc", meta.Username)
+		}
+		if meta.Host != "tcp:db.example.net,1433" {
+			t.Errorf("Host = %q, want tcp:db.example.net,1433", meta.Host)
+		}
+		if meta.ClientID != "abc-123" {
+			t.Errorf("ClientID = %q, want abc-123", meta.ClientID)
+		}
+		if meta.ClientKey != "topsecret" {
+			t.Errorf("ClientKey = %q, want topsecret", meta.ClientKey)
+		}
+	})
+
+	t.Run("non-connection-string value", func(t *testing.T) {
+		var meta Meta
+		if parseConnStringMeta("just a plain value", &meta) {
+			t.Errorf("expected false for non-connection-string, got %+v", meta)
 		}
 	})
 }

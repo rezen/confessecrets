@@ -9,9 +9,18 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
+)
+
+// Finding severity levels. levelHigh marks a detected secret (the default for
+// every finding); levelInfo marks an informational, non-credential match such as
+// a recognized service URL.
+const (
+	levelHigh = "high"
+	levelInfo = "info"
 )
 
 // Reasons returned by classifySecretReason identifying why a value looks secret.
@@ -180,9 +189,18 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 }
 
 func newFinding(file, path, namePath, valuePath, name, value, reason string) Finding {
+	line := lineFromPath(path)
+	// A bare "line:N" path is fully covered by File + Line, so drop it as
+	// redundant; structured ("$.a.b") and section-qualified ("[sec] line:N") paths
+	// carry location the line number alone does not, and are kept.
+	if isBareLinePath(path) {
+		path = ""
+	}
 	return Finding{
 		File:                file,
 		Path:                path,
+		Line:                line,
+		Level:               levelHigh,
 		NamePath:            namePath,
 		ValuePath:           valuePath,
 		Name:                name,
@@ -192,12 +210,61 @@ func newFinding(file, path, namePath, valuePath, name, value, reason string) Fin
 		Entropy:             valueEntropy(value),
 		NameValueSimilarity: round2(nameValueSimilarity(name, value)),
 		Reason:              reason,
-		Meta:                parseJWTMeta(value),
+		Meta:                buildMeta(value),
 	}
 }
 
+// lineRe extracts the 1-based line number from a finding path produced by the
+// line-oriented detectors, which embed it as "line:N" (optionally prefixed with
+// an INI section, e.g. "[credentials] line:2").
+var lineRe = regexp.MustCompile(`line:(\d+)`)
+
+// lineFromPath returns the source line encoded in a finding path, or 0 when the
+// path carries no line number (e.g. a structured JSON path like "$.a.b").
+func lineFromPath(path string) int {
+	m := lineRe.FindStringSubmatch(path)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// bareLinePathRe matches a path that is nothing but a "line:N" locator.
+var bareLinePathRe = regexp.MustCompile(`^line:\d+$`)
+
+// isBareLinePath reports whether path encodes only a line number, with no
+// structural or section context — making it redundant with the Line field.
+func isBareLinePath(path string) bool {
+	return bareLinePathRe.MatchString(path)
+}
+
 func shouldSkipValue(value string, rule Rule) bool {
-	return shouldIgnoreValue(value, rule) || isURLWithoutCredentials(value)
+	return shouldIgnoreValue(value, rule) || isTemplatePlaceholder(value) || isURLWithoutCredentials(value)
+}
+
+// templatePlaceholderRe matches the brace/paren-delimited variable and template
+// placeholders whose presence anywhere in a value means it is a substitution
+// target rather than a literal secret: ${VAR} and $(VAR) (shell, Make, CI),
+// {{ var }} (Mustache/Jinja/Helm/Go templates). These delimiters are distinctive
+// enough that a match anywhere in the value is a reliable signal.
+var templatePlaceholderRe = regexp.MustCompile(`\$\{[^}]*\}|\$\([^)]*\)|\{\{[^}]*\}\}`)
+
+// atVarPlaceholderRe matches a value that is, in its entirety, a single
+// @-delimited or %-delimited placeholder such as @DB_HOST@ or %DB_HOST%
+// (Autotools/Maven resource filtering, Windows batch). Unlike the forms above,
+// these single-character delimiters also occur inside ordinary secrets (e.g. a
+// password containing '%'), so only a whole-value match is treated as a
+// placeholder, not a substring one.
+var atVarPlaceholderRe = regexp.MustCompile(`^(?:@[A-Za-z0-9_.]+@|%[A-Za-z0-9_.]+%)$`)
+
+// isTemplatePlaceholder reports whether value is, or embeds, a variable/template
+// placeholder — e.g. ${DB_HOST}, $(secret), {{ db_host }}, or a whole-value
+// @DB_HOST@ / %DB_HOST%. Such values defer the real secret to substitution time,
+// so the literal text is not itself a credential and should not be flagged.
+func isTemplatePlaceholder(value string) bool {
+	value = normalizeScalar(value)
+	return templatePlaceholderRe.MatchString(value) || atVarPlaceholderRe.MatchString(value)
 }
 
 // nameSignalsSecret reports whether name indicates a secret under rule: it must
@@ -272,10 +339,7 @@ func isLikelySecretValue(name, value string, rule Rule) bool {
 		return true
 	}
 
-	if strings.Contains(value, "$(") ||
-		strings.Contains(value, "${") ||
-		strings.Contains(value, "{{") ||
-		strings.Contains(value, "}}") {
+	if isTemplatePlaceholder(value) {
 		return false
 	}
 
@@ -293,22 +357,15 @@ func isLikelySecretValue(name, value string, rule Rule) bool {
 		return false
 	}
 
-	lower := strings.ToLower(value)
+	return !isStopword(value, rule)
+}
 
-	nonSecrets := map[string]bool{
-		"true":      true,
-		"false":     true,
-		"null":      true,
-		"none":      true,
-		"changeme":  true,
-		"password":  true,
-		"example":   true,
-		"test":      true,
-		"dummy":     true,
-		"undefined": true,
-	}
-
-	return !nonSecrets[lower]
+// isStopword reports whether value is a known non-secret: as in gitleaks, it
+// matches when the value contains (case-insensitively) any word from the built-in
+// stopword set or any extra stopword configured on the rule.
+func isStopword(value string, rule Rule) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return containsStopword(lower, builtinStopwords) || containsStopword(lower, rule.Stopwords)
 }
 
 // fillerWords are the placeholder qualifiers that commonly wrap an echoed key
@@ -444,11 +501,39 @@ func hasJWTIndicator(value string) bool {
 	return strings.HasPrefix(value, "eyJ") || strings.Contains(value, " eyJ")
 }
 
-// parseJWTMeta extracts claims from a JWT embedded in value. The standard
-// iss/iat/exp claims are mapped to dedicated fields; every other claim is stored
-// in Extra. It returns nil when value contains no JWT, the token can't be
-// decoded, or it carries no claims, so non-JWT findings carry no Meta.
-func parseJWTMeta(value string) *Meta {
+// buildMeta assembles a finding's optional metadata from its value. It merges
+// JWT claims/header, URL credentials, and connection-string fields into one Meta,
+// returning nil when the value yields no metadata so non-matching findings carry
+// no Meta. Correlation may further enrich the result later (see enrichMetaFromPartner).
+func buildMeta(value string) *Meta {
+	var meta Meta
+	populated := false
+
+	if jwt := parseJWT(value); jwt != nil {
+		meta.JWT = jwt
+		populated = true
+	}
+
+	if parseURLMeta(value, &meta) {
+		populated = true
+	}
+
+	if parseConnStringMeta(value, &meta) {
+		populated = true
+	}
+
+	if !populated {
+		return nil
+	}
+
+	return &meta
+}
+
+// parseJWT extracts the header and claims from a JWT embedded in value. The
+// standard iss/iat/exp claims are mapped to dedicated fields, the decoded header
+// to Header, and every other claim to Extra. It returns nil when value contains
+// no JWT, the token can't be decoded, or it carries no header and no claims.
+func parseJWT(value string) *JWT {
 	token := extractJWT(value)
 	if token == "" {
 		return nil
@@ -469,32 +554,40 @@ func parseJWTMeta(value string) *Meta {
 		return nil
 	}
 
-	meta := &Meta{}
+	jwt := &JWT{}
 	populated := false
+
+	if header, err := decodeJWTSegment(parts[0]); err == nil {
+		var h map[string]any
+		if json.Unmarshal(header, &h) == nil && len(h) > 0 {
+			jwt.Header = h
+			populated = true
+		}
+	}
 
 	for key, raw := range claims {
 		switch key {
 		case "iss":
 			if s, ok := raw.(string); ok && s != "" {
-				meta.Issuer = s
+				jwt.Issuer = s
 				populated = true
 			}
 		case "iat":
 			if n, ok := raw.(float64); ok && n != 0 {
-				meta.Iat = int64(n)
+				jwt.Iat = int64(n)
 				populated = true
 			}
 		case "exp":
 			if n, ok := raw.(float64); ok && n != 0 {
-				meta.Expiration = int64(n)
-				meta.IsExpired = meta.Expiration < time.Now().Unix()
+				jwt.Expiration = int64(n)
+				jwt.IsExpired = jwt.Expiration < time.Now().Unix()
 				populated = true
 			}
 		default:
-			if meta.Extra == nil {
-				meta.Extra = make(map[string]any, len(claims))
+			if jwt.Extra == nil {
+				jwt.Extra = make(map[string]any, len(claims))
 			}
-			meta.Extra[key] = raw
+			jwt.Extra[key] = raw
 			populated = true
 		}
 	}
@@ -503,7 +596,99 @@ func parseJWTMeta(value string) *Meta {
 		return nil
 	}
 
-	return meta
+	return jwt
+}
+
+// parseURLMeta fills Username, Host, and URL on meta when value is a URL carrying
+// userinfo credentials (user:pass@host). It returns true when it set any field.
+func parseURLMeta(value string, meta *Meta) bool {
+	u, ok := parseURL(value)
+	if !ok || u.User == nil {
+		return false
+	}
+
+	if name := u.User.Username(); name != "" && meta.Username == "" {
+		meta.Username = name
+	}
+	if u.Host != "" && meta.Host == "" {
+		meta.Host = u.Host
+	}
+	if meta.URL == "" {
+		meta.URL = normalizeScalar(value)
+	}
+
+	return true
+}
+
+// connStringFields maps a normalized connection-string key to the Meta field it
+// populates. Keys are matched case-insensitively against the part before the
+// `=`/`:` separator. The recognized keys mirror looksLikeConnectionString.
+var connStringFields = []struct {
+	keys  []string
+	field func(*Meta) *string
+}{
+	{[]string{"username", "user id", "uid", "user"}, func(m *Meta) *string { return &m.Username }},
+	{[]string{"data source", "server", "host"}, func(m *Meta) *string { return &m.Host }},
+	{[]string{"client id", "clientid", "client_id", "appid"}, func(m *Meta) *string { return &m.ClientID }},
+	{[]string{"client secret", "clientsecret", "client_key"}, func(m *Meta) *string { return &m.ClientKey }},
+}
+
+// parseConnStringMeta fills Username, Host, ClientID, and ClientKey on meta from a
+// `key=value;`/`key: value` connection string. It returns true when it set any
+// field. Only connection-string-shaped values are inspected.
+func parseConnStringMeta(value string, meta *Meta) bool {
+	if !looksLikeConnectionString(value) {
+		return false
+	}
+
+	set := false
+	for _, pair := range strings.FieldsFunc(value, func(r rune) bool { return r == ';' }) {
+		key, val, ok := splitConnStringPair(pair)
+		if !ok {
+			continue
+		}
+
+		for _, f := range connStringFields {
+			if !containsFold(f.keys, key) {
+				continue
+			}
+			if dst := f.field(meta); *dst == "" {
+				*dst = val
+				set = true
+			}
+			break
+		}
+	}
+
+	return set
+}
+
+// splitConnStringPair splits a single connection-string pair into a normalized
+// (lowercased, trimmed) key and its raw value, accepting either `=` or `:` as the
+// separator. ok is false when the pair has no separator or an empty key.
+func splitConnStringPair(pair string) (key, val string, ok bool) {
+	idx := strings.IndexAny(pair, "=:")
+	if idx < 0 {
+		return "", "", false
+	}
+
+	key = strings.ToLower(strings.TrimSpace(pair[:idx]))
+	val = strings.TrimSpace(pair[idx+1:])
+	if key == "" {
+		return "", "", false
+	}
+
+	return key, val, true
+}
+
+// containsFold reports whether s equals any of keys (already lowercase).
+func containsFold(keys []string, s string) bool {
+	for _, k := range keys {
+		if k == s {
+			return true
+		}
+	}
+	return false
 }
 
 // extractJWT returns the JWT substring within value (starting at the "eyJ"

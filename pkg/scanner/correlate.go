@@ -31,6 +31,21 @@ var builtinCorrelations = []CorrelationConfig{
 		Partners: []FindingMatcher{{NameRegex: `(?i)client[_-]?id`}},
 	},
 	{
+		// An OAuth2 / OIDC client secret paired with the service or token-endpoint
+		// URL it authenticates against. A partner counts as a URL when its name reads
+		// like one (url/uri/endpoint) or its value was surfaced as a service-endpoint
+		// URL (an info: finding) or as a URL carrying credentials. Listed after
+		// oauth-client-credentials so a client_id pairing still wins when present
+		// (first matching rule wins per primary); the URL is the fallback partner.
+		ID:    "client-secret-url",
+		Match: FindingMatcher{NameRegex: `(?i)client[_-]?secret`},
+		Partners: []FindingMatcher{{
+			Expr: `lower(name) contains "url" || lower(name) contains "uri" || ` +
+				`lower(name) contains "endpoint" || reason startsWith "info:" || ` +
+				`reason contains "url"`,
+		}},
+	},
+	{
 		// OAuth1 consumer credentials.
 		ID:       "consumer-credentials",
 		Match:    FindingMatcher{NameRegex: `(?i)consumer[_-]?secret`},
@@ -41,6 +56,14 @@ var builtinCorrelations = []CorrelationConfig{
 		ID:       "api-key-secret",
 		Match:    FindingMatcher{NameRegex: `(?i)api[_-]?secret`},
 		Partners: []FindingMatcher{{NameRegex: `(?i)api[_-]?key`}},
+	},
+	{
+		// A cloud function/handler paired with the service URL it is exposed at
+		// (e.g. an Azure Functions or AWS Lambda function next to its endpoint URL).
+		// Names are lower-cased before the substring test so an upper-case
+		// FUNCTION_KEY / BASE_URL pair still correlates.
+		ID:   "function-url",
+		When: `lower(name) contains "function" && lower(prev.name) contains "url"`,
 	},
 }
 
@@ -211,6 +234,11 @@ func correlateFindings(findings []Finding, rules []Correlation) []Finding {
 				sec := findings[j]
 				sec.Tags = appendTag(sec.Tags, rule.Tag)
 				sec.Tags = appendTag(sec.Tags, secondaryTag)
+				enrichMetaFromPartner(&findings[i], sec)
+				// A correlated partner is always in the same file as its primary, so
+				// drop the redundant file path from the embedded copy — only its
+				// in-file location (Path) is kept.
+				sec.File = ""
 				findings[i].Correlated = append(findings[i].Correlated, sec)
 			}
 			break // first matching rule wins
@@ -282,13 +310,58 @@ func (r Correlation) partnersFor(findings []Finding, i, window int, consumed []b
 	return assigned, true
 }
 
-// correlationEnv exposes the primary (current) and a candidate prior finding
-// (prev) to a correlation expression, each as the same variable set a filter
-// expression sees (see filterEnv). A zero pair gives the compiler the names and
-// types for type-checking.
-func correlationEnv(current, prev Finding) map[string]any {
-	return map[string]any{
-		"current": filterEnv(current),
-		"prev":    filterEnv(prev),
+// enrichMetaFromPartner lifts the identity of a correlated partner into the
+// primary's Meta: a client-id-like partner name fills ClientID, a client
+// secret/key-like name fills ClientKey, a user-like name fills Username, and a
+// URL-like partner (its name reads url/uri/endpoint, or its value was surfaced as
+// a service-endpoint URL) fills URL. Only empty fields are filled, so
+// value-derived metadata is never overwritten. The secret-ish ClientKey takes the
+// partner's redacted Value; the non-secret ClientID/Username/URL take its raw value.
+func enrichMetaFromPartner(primary *Finding, partner Finding) {
+	name := strings.ToLower(partner.Name)
+
+	var dst *string
+	var src string
+	switch {
+	case strings.Contains(name, "client") && (strings.Contains(name, "secret") || strings.Contains(name, "key")):
+		dst, src = &primaryMeta(primary).ClientKey, partner.Value
+	case strings.Contains(name, "client") && strings.Contains(name, "id"),
+		strings.Contains(name, "appid"), strings.Contains(name, "app_id"):
+		dst, src = &primaryMeta(primary).ClientID, partner.RawValue
+	case strings.Contains(name, "user"):
+		dst, src = &primaryMeta(primary).Username, partner.RawValue
+	case strings.Contains(name, "url"), strings.Contains(name, "uri"),
+		strings.Contains(name, "endpoint"),
+		strings.HasPrefix(partner.Reason, "info:"), strings.Contains(partner.Reason, "url"):
+		dst, src = &primaryMeta(primary).URL, partner.RawValue
+	default:
+		return
 	}
+
+	if *dst == "" {
+		*dst = src
+	}
+}
+
+// primaryMeta returns the finding's Meta, allocating it on first use so callers
+// can populate identity fields without a nil check.
+func primaryMeta(f *Finding) *Meta {
+	if f.Meta == nil {
+		f.Meta = &Meta{}
+	}
+	return f.Meta
+}
+
+// correlationEnv exposes the primary (current) and a candidate prior finding
+// (prev) to a correlation expression. The primary's fields are available both at
+// the top level (so `name` refers to the current finding, as in a filter
+// expression) and under `current`; the candidate's fields are under `prev`. Each
+// finding is projected with the same variable set a filter expression sees (see
+// filterEnv). A zero pair gives the compiler the names and types for
+// type-checking.
+func correlationEnv(current, prev Finding) map[string]any {
+	env := filterEnv(current)
+	env["current"] = filterEnv(current)
+	env["prev"] = filterEnv(prev)
+	return env
 }

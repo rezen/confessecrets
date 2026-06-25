@@ -56,6 +56,74 @@ func matchValuePattern(value string) string {
 	return ""
 }
 
+// infoURLPatterns recognize service endpoint URLs that are worth surfacing for
+// inventory and review but are not themselves credentials. A match yields an
+// informational (levelInfo) finding rather than a secret, reasoned "info:<id>".
+var infoURLPatterns = []ValuePattern{
+	// ---- AWS ----
+	// Lambda function URLs, e.g. abc123.lambda-url.us-east-1.on.aws
+	{"aws-lambda-url", regexp.MustCompile(`(?i)\b[a-z0-9]+\.lambda-url\.[a-z0-9-]+\.on\.aws\b`)},
+	// API Gateway (REST/HTTP), e.g. a1b2c3d4.execute-api.us-east-1.amazonaws.com
+	{"aws-api-gateway", regexp.MustCompile(`(?i)\b[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com\b`)},
+	// AppSync GraphQL, e.g. abc.appsync-api.us-east-1.amazonaws.com
+	{"aws-appsync", regexp.MustCompile(`(?i)\b[a-z0-9]+\.appsync-api\.[a-z0-9-]+\.amazonaws\.com\b`)},
+
+	// ---- Azure ----
+	// App Service / Functions. Covers classic (app.azurewebsites.net),
+	// SCM/Kudu (app.scm.azurewebsites.net), and the newer region-scoped
+	// unique default hostnames (app-<hash>.<region>.azurewebsites.net and
+	// app-<hash>.scm.<region>.azurewebsites.net).
+	{"azure-app-service", regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.scm)?(?:\.[a-z0-9]+)?\.azurewebsites\.net\b`)},
+	// API Management, e.g. myapi.azure-api.net
+	{"azure-api-management", regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.azure-api\.net\b`)},
+	// Container Apps, e.g. app.kindhill-a1b2c3.eastus.azurecontainerapps.io
+	{"azure-container-apps", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+){2}\.azurecontainerapps\.io\b`)},
+	// Static Web Apps, e.g. app.<random>.<region>.azurestaticapps.net
+	{"azure-static-web-apps", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.azurestaticapps\.net\b`)},
+
+	// ---- GCP ----
+	// Cloud Functions (1st gen), e.g. us-central1-my-project.cloudfunctions.net
+	{"gcp-cloud-functions", regexp.MustCompile(`(?i)\b[a-z][a-z0-9-]*\.cloudfunctions\.net\b`)},
+	// Cloud Run / Cloud Functions v2. Covers deterministic
+	// (service-<projectnumber>.<region>.run.app), non-deterministic
+	// (service-<hash>.run.app), and legacy (service-<hash>-<code>.a.run.app).
+	{"gcp-cloud-run", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)?\.(?:a\.)?run\.app\b`)},
+
+	// ---- Vercel ----
+	// Production and per-deployment URLs, e.g. project.vercel.app and
+	// project-<hash>-<scope>.vercel.app
+	{"vercel", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.vercel\.app\b`)},
+
+	// ---- Heroku ----
+	// App hostname, e.g. myapp.herokuapp.com
+	{"heroku-app", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.herokuapp\.com\b`)},
+	// Current DNS/CNAME target, e.g. myapp.herokudns.com
+	{"heroku-dns", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.herokudns\.com\b`)},
+
+	// ---- Other common FaaS / edge ----
+	// Cloudflare Workers, e.g. name.subdomain.workers.dev
+	{"cloudflare-workers", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.workers\.dev\b`)},
+	// Netlify, e.g. site.netlify.app (functions at /.netlify/functions/<name>)
+	{"netlify", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.netlify\.app\b`)},
+	// Supabase Edge Functions. Host alone (*.supabase.co) is broad, so this
+	// anchors on the function path to stay function-specific.
+	{"supabase-functions", regexp.MustCompile(`(?i)\b[a-z0-9]+\.supabase\.co/functions/v1/[a-z0-9_-]+`)},
+	// DigitalOcean Functions, e.g. faas-nyc1-abc123.doserverless.co
+	{"digitalocean-functions", regexp.MustCompile(`(?i)\bfaas-[a-z0-9]+-[a-z0-9]+\.doserverless\.co\b`)},
+}
+
+// matchInfoURL returns the ID of the first info URL pattern whose regex matches
+// value, or "" if none match.
+func matchInfoURL(value string) string {
+	for _, p := range infoURLPatterns {
+		if p.Regex.MatchString(value) {
+			return p.ID
+		}
+	}
+
+	return ""
+}
+
 // ExaminationFocus bundles the single item under inspection for value-pattern
 // detection: where it lives (File/Path), how it is labelled (Name), its scalar
 // Value, and a snapshot of the most-recent prior findings for this file, kept
@@ -134,6 +202,22 @@ func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 			value,
 			reason,
 		)}
+	}
+
+	// Service endpoint URLs are informational rather than secret: surface them at
+	// info level so they don't carry the high severity of a credential.
+	if id := matchInfoURL(value); id != "" {
+		f := newFinding(
+			focus.File,
+			focus.Path,
+			"value_pattern",
+			"value_pattern",
+			focus.Name,
+			value,
+			"info:"+id,
+		)
+		f.Level = levelInfo
+		return []Finding{f}
 	}
 
 	return nil
