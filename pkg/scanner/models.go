@@ -3,6 +3,7 @@ package scanner
 import (
 	"regexp"
 
+	"github.com/expr-lang/expr/vm"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,6 +16,11 @@ type Config struct {
 	// on the rule's action (drop it, or tag it). See FilterConfig and Filter for
 	// the available variables. Empty means no filtering.
 	Filter FilterConfigs `yaml:"filter"`
+	// Correlations is an optional list of correlation rules. Each pairs a primary
+	// finding with one or more partner findings seen just before it in the same
+	// file; on a match the primary embeds the partners (which are dropped from the
+	// top-level results) and all are tagged. See CorrelationConfig.
+	Correlations []CorrelationConfig `yaml:"correlations"`
 }
 
 // Filter actions decide what happens to a finding a filter rule matches.
@@ -210,14 +216,76 @@ type CustomDetector struct {
 	MinEntropy     float64
 }
 
+// CorrelationConfig defines a relationship between findings: a primary finding
+// (matched by Match, or the When expression's `current`) is enriched when every
+// partner is present among the recent prior findings of the same file. It accepts
+// two forms — structured (Match + Partners) or an expr-lang expression (When,
+// with `current` and the `prev` finding-list in scope). On a match the partners
+// are embedded into the primary, dropped from the top-level results, and all are
+// tagged with Tag (defaulting to ID).
+type CorrelationConfig struct {
+	ID       string           `yaml:"id"`
+	Match    FindingMatcher   `yaml:"match"`
+	Partners []FindingMatcher `yaml:"partners"`
+	When     string           `yaml:"when"`
+	Tag      string           `yaml:"tag"`
+}
+
+// FindingMatcher matches a single finding. It has two mutually exclusive forms:
+// the regex form matches by one or more finding fields (all set fields must match,
+// AND); the expression form (Expr) is an expr-lang predicate evaluated against the
+// finding's fields (the same variables a filter expression sees, e.g. `name`,
+// `reason`, `entropy`). An empty matcher matches nothing.
+type FindingMatcher struct {
+	NameRegex   string `yaml:"name_regex"`
+	ReasonRegex string `yaml:"reason_regex"`
+	PathRegex   string `yaml:"path_regex"`
+	Expr        string `yaml:"expr"`
+}
+
+// Correlation is a compiled CorrelationConfig. Exactly one form is active:
+// structured (match + partners) or expression (program != nil).
+type Correlation struct {
+	ID       string
+	Tag      string
+	match    findingMatcher
+	partners []findingMatcher
+	program  *vm.Program
+}
+
+// findingMatcher is a compiled FindingMatcher. Either program is set (expression
+// form) or some of the regex fields are (regex form); nil regex fields are
+// unconstrained.
+type findingMatcher struct {
+	name    *regexp.Regexp
+	reason  *regexp.Regexp
+	path    *regexp.Regexp
+	program *vm.Program
+}
+
 // RuleSet is the compiled detection configuration applied to a file: the
-// name-driven Rules and the value-shape Detectors (custom, trufflehog-style).
-// The two travel together so every file is scanned under one effective config,
-// including repo-local overrides.
+// name-driven Rules, the value-shape Detectors (custom, trufflehog-style), the
+// post-detection Filters, and the cross-finding Correlations. They travel
+// together so every file is scanned under one effective config, including
+// repo-local overrides.
 type RuleSet struct {
-	Rules     []Rule
-	Detectors []CustomDetector
-	Filters   []*Filter
+	Rules        []Rule
+	Detectors    []CustomDetector
+	Filters      []*Filter
+	Correlations []Correlation
+}
+
+// prevWindow is how many recent findings are carried as correlation context: the
+// minPrevWindow floor, grown to fit the rule with the most partners so any
+// defined correlation can always be satisfied within the window.
+func (s RuleSet) prevWindow() int {
+	n := minPrevWindow
+	for _, c := range s.Correlations {
+		if len(c.partners) > n {
+			n = len(c.partners)
+		}
+	}
+	return n
 }
 
 type Finding struct {
@@ -242,6 +310,11 @@ type Finding struct {
 	Filtered       bool   `json:"filtered,omitempty"`
 	FilteredReason string `json:"filtered_reason,omitempty"`
 	Meta           *Meta  `json:"meta,omitempty"`
+	// Correlated holds secondary findings folded into this primary by a
+	// correlation rule (e.g. the client_id paired with this client_secret).
+	// Embedded secondaries are removed from the top-level results and surface only
+	// nested here.
+	Correlated []Finding `json:"correlated,omitempty"`
 }
 
 // Meta holds optional, value-derived metadata. It is currently populated from

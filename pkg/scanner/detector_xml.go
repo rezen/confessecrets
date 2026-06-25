@@ -50,7 +50,7 @@ func detectXML(file string, data []byte, set RuleSet) []Finding {
 			findings = append(findings, detectXMLAttrReasons(file, pathOf(), t.Attr, set.Rules)...)
 
 			for _, attr := range t.Attr {
-				findings = append(findings, detectValuePatterns(file, pathOf(), attr.Name.Local, attr.Value, set)...)
+				findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: pathOf(), Name: attr.Name.Local, Value: attr.Value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 			}
 
 		case xml.CharData:
@@ -74,7 +74,7 @@ func detectXML(file string, data []byte, set RuleSet) []Finding {
 
 			findings = append(findings, detectXMLElementText(file, path, f.name, text, set.Rules)...)
 			findings = append(findings, detectXMLTextReason(file, path, f.name, text, set.Rules)...)
-			findings = append(findings, detectValuePatterns(file, path, f.name, text, set)...)
+			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: f.name, Value: text, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 		}
 	}
 

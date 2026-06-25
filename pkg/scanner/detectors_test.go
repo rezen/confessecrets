@@ -118,7 +118,7 @@ func TestDetectValuePatternsCustom(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings := detectValuePatterns("f", "$.x", tt.key, tt.value, set)
+			findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: tt.key, Value: tt.value}, set)
 
 			if tt.wantReason == "" {
 				if len(findings) != 0 {
@@ -149,7 +149,7 @@ func TestDetectValuePatternsGitleaksPrecedence(t *testing.T) {
 		t.Fatalf("CompileDetectors: %v", err)
 	}
 
-	findings := detectValuePatterns("f", "$.x", "AKIA", "AKIAIOSFODNN7EXAMPLE", RuleSet{Detectors: detectors})
+	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "AKIA", Value: "AKIAIOSFODNN7EXAMPLE"}, RuleSet{Detectors: detectors})
 	if len(findings) != 1 || findings[0].Reason != "gitleaks:aws-access-token" {
 		t.Fatalf("expected gitleaks precedence, got %+v", findings)
 	}
@@ -173,7 +173,7 @@ func TestDetectValuePatternsCustomSuppressedByRule(t *testing.T) {
 		t.Fatalf("CompileDetectors: %v", err)
 	}
 
-	findings := detectValuePatterns("f", "$.x", "acme_token", "AKME-0123456789abcdef", RuleSet{Rules: rules, Detectors: detectors})
+	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "acme_token", Value: "AKME-0123456789abcdef"}, RuleSet{Rules: rules, Detectors: detectors})
 	if len(findings) != 0 {
 		t.Errorf("ignore prefix should suppress custom-detector finding, got %+v", findings)
 	}
@@ -219,19 +219,19 @@ func TestDetectValuePatternsHighEntropy(t *testing.T) {
 	set := RuleSet{Rules: rules}
 
 	// A high-entropy value with an unremarkable key name is flagged by entropy.
-	findings := detectValuePatterns("f", "$.x", "anything", "Xa9Kd2Lp7Qm4Zr8Wb3Nc6Vt1Hf5Jg0Ys", set)
+	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "anything", Value: "Xa9Kd2Lp7Qm4Zr8Wb3Nc6Vt1Hf5Jg0Ys"}, set)
 	if len(findings) != 1 || !strings.HasPrefix(findings[0].Reason, "high_entropy:") {
 		t.Fatalf("expected a high_entropy finding, got %+v", findings)
 	}
 
 	// A built-in gitleaks pattern still wins over the generic entropy detector.
-	findings = detectValuePatterns("f", "$.x", "anything", "AKIAIOSFODNN7EXAMPLE", set)
+	findings = detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "anything", Value: "AKIAIOSFODNN7EXAMPLE"}, set)
 	if len(findings) != 1 || findings[0].Reason != "gitleaks:aws-access-token" {
 		t.Fatalf("expected gitleaks precedence, got %+v", findings)
 	}
 
 	// A rule's ignore prefix suppresses the entropy match too.
-	findings = detectValuePatterns("f", "$.x", "anything", "ignore-Xa9Kd2Lp7Qm4Zr8Wb3Nc6Vt1Hf5Jg0Ys", set)
+	findings = detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "anything", Value: "ignore-Xa9Kd2Lp7Qm4Zr8Wb3Nc6Vt1Hf5Jg0Ys"}, set)
 	if len(findings) != 0 {
 		t.Errorf("ignore prefix should suppress high-entropy finding, got %+v", findings)
 	}

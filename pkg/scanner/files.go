@@ -115,7 +115,12 @@ func CompileConfig(cfg Config) (RuleSet, error) {
 		return RuleSet{}, err
 	}
 
-	return RuleSet{Rules: rules, Detectors: detectors, Filters: filters}, nil
+	correlations, err := CompileCorrelations(cfg.Correlations)
+	if err != nil {
+		return RuleSet{}, err
+	}
+
+	return RuleSet{Rules: rules, Detectors: detectors, Filters: filters, Correlations: correlations}, nil
 }
 
 // Walk invokes fn for root if it is a file, or for every file beneath it if it
@@ -190,6 +195,7 @@ func ScanFile(path string, set RuleSet, opts ScanOptions) ([]Finding, error) {
 	}
 
 	findings := detector.Detect(path, data, set)
+	findings = correlateFindings(findings, set.Correlations)
 	if tag := languageTag(path); tag != "" {
 		for i := range findings {
 			findings[i].Tags = appendTag(findings[i].Tags, tag)

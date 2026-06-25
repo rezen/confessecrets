@@ -533,7 +533,7 @@ func TestDetectValuePatternsSuppressed(t *testing.T) {
 		t.Fatalf("CompileRules: %v", err)
 	}
 
-	findings := detectValuePatterns("f", "$.x", "x", "AKIAIOSFODNN7EXAMPLE", RuleSet{Rules: rules})
+	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "x", Value: "AKIAIOSFODNN7EXAMPLE"}, RuleSet{Rules: rules})
 	if len(findings) != 0 {
 		t.Errorf("ignore prefix should suppress value-pattern finding, got %+v", findings)
 	}

@@ -56,14 +56,40 @@ func matchValuePattern(value string) string {
 	return ""
 }
 
+// ExaminationFocus bundles the single item under inspection for value-pattern
+// detection: where it lives (File/Path), how it is labelled (Name), its scalar
+// Value, and a snapshot of the most-recent prior findings for this file, kept
+// for correlation context.
+type ExaminationFocus struct {
+	File         string
+	Path         string
+	Name         string
+	Value        string
+	PrevFindings []Finding
+}
+
+// minPrevWindow is the floor for how many recent findings are carried as
+// correlation context; the effective window grows to fit the largest correlation
+// rule (see RuleSet.prevWindow).
+const minPrevWindow = 3
+
+// recentFindings returns the up-to-n most recent findings, in append order, used
+// to seed an ExaminationFocus.PrevFindings without carrying the whole slice.
+func recentFindings(findings []Finding, n int) []Finding {
+	if n <= 0 || len(findings) <= n {
+		return findings
+	}
+	return findings[len(findings)-n:]
+}
+
 // detectValuePatterns scans a single value against the built-in gitleaks
 // patterns and any configured custom (trufflehog-style) detectors, independent
 // of the key name. It honors the configured value-ignore prefixes/patterns (so
 // suppressions still apply) and emits at most one finding. The built-in patterns
 // take precedence and are tagged "gitleaks:<rule-id>"; a custom detector match
 // is tagged "custom:<detector-name>".
-func detectValuePatterns(file, path, name, value string, set RuleSet) []Finding {
-	value = normalizeScalar(value)
+func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
+	value := normalizeScalar(focus.Value)
 	if value == "" {
 		return nil
 	}
@@ -74,24 +100,24 @@ func detectValuePatterns(file, path, name, value string, set RuleSet) []Finding 
 
 	if id := matchValuePattern(value); id != "" {
 		return []Finding{newFinding(
-			file,
-			path,
+			focus.File,
+			focus.Path,
 			"value_pattern",
 			"value_pattern",
-			name,
+			focus.Name,
 			value,
 			"gitleaks:"+id,
 		)}
 	}
 
 	for _, d := range set.Detectors {
-		if _, ok := d.match(value, name); ok {
+		if _, ok := d.match(value, focus.Name); ok {
 			return []Finding{newFinding(
-				file,
-				path,
+				focus.File,
+				focus.Path,
 				"value_pattern",
 				"value_pattern",
-				name,
+				focus.Name,
 				value,
 				"custom:"+d.Name,
 			)}
@@ -100,11 +126,11 @@ func detectValuePatterns(file, path, name, value string, set RuleSet) []Finding 
 
 	if reason := matchHighEntropy(value, set.Rules); reason != "" {
 		return []Finding{newFinding(
-			file,
-			path,
+			focus.File,
+			focus.Path,
 			"value_pattern",
 			"value_pattern",
-			name,
+			focus.Name,
 			value,
 			reason,
 		)}

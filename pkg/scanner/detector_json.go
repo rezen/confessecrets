@@ -60,7 +60,7 @@ func detectJSONLines(file string, data []byte, set RuleSet) []Finding {
 				))
 			}
 
-			findings = append(findings, detectValuePatterns(file, fmt.Sprintf("line:%d", i+1), key, value, set)...)
+			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: fmt.Sprintf("line:%d", i+1), Name: key, Value: value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 		}
 	}
 

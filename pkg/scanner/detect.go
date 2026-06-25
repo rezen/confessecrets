@@ -90,7 +90,7 @@ func detectStructured(file string, root any, set RuleSet) []Finding {
 		case string:
 			// Value scanning: flag any scalar whose shape matches a known
 			// secret token, regardless of its key name.
-			findings = append(findings, detectValuePatterns(file, path, lastSegment(path), v, set)...)
+			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: lastSegment(path), Value: v, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 		}
 	}
 

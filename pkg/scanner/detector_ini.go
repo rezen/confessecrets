@@ -102,7 +102,7 @@ func detectINILines(file string, data []byte, set RuleSet) []Finding {
 			))
 		}
 
-		findings = append(findings, detectValuePatterns(file, path, key, value, set)...)
+		findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: key, Value: value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 	}
 
 	return findings

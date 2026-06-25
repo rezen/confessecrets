@@ -550,7 +550,7 @@ func (l *loadedLang) detectValues(file string, data []byte, tree *ts.Tree, lines
 
 			value := cleanSourceLiteral(cap.Text(data))
 			path := fmt.Sprintf("line:%d", lines.lineAt(int(cap.Node.StartByte())))
-			findings = append(findings, detectValuePatterns(file, path, "", value, set)...)
+			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: "", Value: value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 		}
 	}
 
