@@ -17,7 +17,7 @@ import (
 // It is a const so it can be referenced anywhere as version.Number. Because
 // consts cannot be overridden by -ldflags, only the build metadata below is
 // stamped at build time.
-const Number = "0.0.4"
+const Number = "0.0.5"
 
 // Build metadata, stamped on release builds via -ldflags, e.g.:
 //
