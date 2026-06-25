@@ -25,6 +25,7 @@ func (JSONDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 
 func detectJSONLines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 	lines := strings.Split(string(data), "\n")
 
 	for i, line := range lines {
@@ -37,12 +38,12 @@ func detectJSONLines(file string, data []byte, set RuleSet) []Finding {
 					continue
 				}
 
-				if shouldSkipValue(value, rule) {
+				if shouldSkipValue(value, rule, lang) {
 					continue
 				}
 
 				reason := classifySecretReason(value)
-				if reason == "" && !isLikelySecretValue(key, value, rule) {
+				if reason == "" && !isLikelySecretValue(key, value, rule, lang) {
 					continue
 				}
 				if reason == "" {

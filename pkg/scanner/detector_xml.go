@@ -83,18 +83,19 @@ func detectXML(file string, data []byte, set RuleSet) []Finding {
 
 func detectXMLElementText(file, path, elem, text string, rules []Rule) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 
 	for _, rule := range rules {
 		if !nameSignalsSecret(elem, rule) {
 			continue
 		}
 
-		if shouldSkipValue(text, rule) {
+		if shouldSkipValue(text, rule, lang) {
 			continue
 		}
 
 		reason := classifySecretReason(text)
-		if reason == "" && !isLikelySecretValue(elem, text, rule) {
+		if reason == "" && !isLikelySecretValue(elem, text, rule, lang) {
 			continue
 		}
 		if reason == "" {
@@ -202,6 +203,7 @@ func nameSignalsSecretForAny(name string, rules []Rule) bool {
 
 func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 
 	byName := make(map[string]string, len(attrs))
 	for _, attr := range attrs {
@@ -216,12 +218,12 @@ func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding
 			}
 
 			value := normalizeScalar(attr.Value)
-			if shouldSkipValue(value, rule) {
+			if shouldSkipValue(value, rule, lang) {
 				continue
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(attr.Name.Local, value, rule) {
+			if reason == "" && !isLikelySecretValue(attr.Name.Local, value, rule, lang) {
 				continue
 			}
 			if reason == "" {
@@ -253,12 +255,12 @@ func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding
 				}
 
 				value := normalizeScalar(raw)
-				if value == "" || shouldSkipValue(value, rule) {
+				if value == "" || shouldSkipValue(value, rule, lang) {
 					continue
 				}
 
 				reason := classifySecretReason(value)
-				if reason == "" && !isLikelySecretValue(name, value, rule) {
+				if reason == "" && !isLikelySecretValue(name, value, rule, lang) {
 					continue
 				}
 				if reason == "" {

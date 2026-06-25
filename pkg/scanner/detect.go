@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -77,18 +78,21 @@ func detectorFor(path string) Detector {
 
 func detectStructured(file string, root any, set RuleSet) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 
 	var walkNode func(any, string)
 	walkNode = func(node any, path string) {
 		switch v := node.(type) {
 		case map[string]any:
 			for _, rule := range set.Rules {
-				findings = append(findings, detectInObject(file, v, path, rule)...)
-				findings = append(findings, detectMapKeyValues(file, v, path, rule)...)
+				findings = append(findings, detectInObject(file, v, path, rule, lang)...)
+				findings = append(findings, detectMapKeyValues(file, v, path, rule, lang)...)
 			}
 
-			for key, child := range v {
-				walkNode(child, joinPath(path, key))
+			// Iterate keys in sorted order so findings are emitted
+			// deterministically; Go randomizes map iteration order.
+			for _, key := range sortedKeys(v) {
+				walkNode(v[key], joinPath(path, key))
 			}
 
 		case []any:
@@ -107,7 +111,7 @@ func detectStructured(file string, root any, set RuleSet) []Finding {
 	return findings
 }
 
-func detectInObject(file string, obj map[string]any, basePath string, rule Rule) []Finding {
+func detectInObject(file string, obj map[string]any, basePath string, rule Rule, lang string) []Finding {
 	var findings []Finding
 
 	for _, namePath := range rule.NamePaths {
@@ -122,12 +126,12 @@ func detectInObject(file string, obj map[string]any, basePath string, rule Rule)
 				continue
 			}
 
-			if shouldSkipValue(value, rule) {
+			if shouldSkipValue(value, rule, lang) {
 				continue
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(name, value, rule) {
+			if reason == "" && !isLikelySecretValue(name, value, rule, lang) {
 				continue
 			}
 			if reason == "" {
@@ -149,11 +153,22 @@ func detectInObject(file string, obj map[string]any, basePath string, rule Rule)
 	return findings
 }
 
-func detectMapKeyValues(file string, obj map[string]any, basePath string, rule Rule) []Finding {
+// sortedKeys returns m's keys in lexical order, giving callers a stable
+// iteration sequence in place of Go's randomized map ranging.
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func detectMapKeyValues(file string, obj map[string]any, basePath string, rule Rule, lang string) []Finding {
 	var findings []Finding
 
-	for key, raw := range obj {
-		value, ok := raw.(string)
+	for _, key := range sortedKeys(obj) {
+		value, ok := obj[key].(string)
 		if !ok {
 			continue
 		}
@@ -162,12 +177,12 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 			continue
 		}
 
-		if shouldSkipValue(value, rule) {
+		if shouldSkipValue(value, rule, lang) {
 			continue
 		}
 
 		reason := classifySecretReason(value)
-		if reason == "" && !isLikelySecretValue(key, value, rule) {
+		if reason == "" && !isLikelySecretValue(key, value, rule, lang) {
 			continue
 		}
 		if reason == "" {
@@ -239,8 +254,8 @@ func isBareLinePath(path string) bool {
 	return bareLinePathRe.MatchString(path)
 }
 
-func shouldSkipValue(value string, rule Rule) bool {
-	return shouldIgnoreValue(value, rule) || isTemplatePlaceholder(value) || isURLWithoutCredentials(value)
+func shouldSkipValue(value string, rule Rule, lang string) bool {
+	return shouldIgnoreValue(value, rule) || isTemplatePlaceholder(value, lang) || isURLWithoutCredentials(value)
 }
 
 // templatePlaceholderRe matches the brace/paren-delimited variable and template
@@ -250,21 +265,46 @@ func shouldSkipValue(value string, rule Rule) bool {
 // enough that a match anywhere in the value is a reliable signal.
 var templatePlaceholderRe = regexp.MustCompile(`\$\{[^}]*\}|\$\([^)]*\)|\{\{[^}]*\}\}`)
 
-// atVarPlaceholderRe matches a value that is, in its entirety, a single
-// @-delimited or %-delimited placeholder such as @DB_HOST@ or %DB_HOST%
-// (Autotools/Maven resource filtering, Windows batch). Unlike the forms above,
-// these single-character delimiters also occur inside ordinary secrets (e.g. a
-// password containing '%'), so only a whole-value match is treated as a
+// atVarPlaceholderRe matches a paired @VAR@ placeholder (Autotools/Maven resource
+// filtering) anywhere in a value; atVarPlaceholderWholeRe requires it to be the
+// entire value. The embedded form — e.g. inside a URL like
+// http://@NAME_LOWER@-ws.example.net:20000, which substitutes to a credential-free
+// host — is only honored for formats Maven filters by this delimiter (see
+// langUsesAtFilter). Elsewhere a bare '@...@' run is more likely part of a real
+// secret than a substitution target, so only a whole-value match counts.
+var atVarPlaceholderRe = regexp.MustCompile(`@[A-Za-z0-9_.]+@`)
+var atVarPlaceholderWholeRe = regexp.MustCompile(`^@[A-Za-z0-9_.]+@$`)
+
+// pctVarPlaceholderRe matches a value that is, in its entirety, a single
+// %-delimited placeholder such as %DB_HOST% (Windows batch, Maven filtering).
+// Unlike '@', a single '%' also occurs inside ordinary secrets (URL-encoded
+// passwords such as p%41ss%2Fword), so only a whole-value match is treated as a
 // placeholder, not a substring one.
-var atVarPlaceholderRe = regexp.MustCompile(`^(?:@[A-Za-z0-9_.]+@|%[A-Za-z0-9_.]+%)$`)
+var pctVarPlaceholderRe = regexp.MustCompile(`^%[A-Za-z0-9_.]+%$`)
+
+// langUsesAtFilter reports whether lang is a format where the paired @VAR@
+// resource-filtering placeholder is conventional, so an embedded (not just
+// whole-value) @VAR@ should be treated as a placeholder. Limited to the resource
+// types Maven filters by the '@...@' delimiter.
+func langUsesAtFilter(lang string) bool {
+	return lang == "xml" || lang == "properties"
+}
 
 // isTemplatePlaceholder reports whether value is, or embeds, a variable/template
-// placeholder — e.g. ${DB_HOST}, $(secret), {{ db_host }}, or a whole-value
-// @DB_HOST@ / %DB_HOST%. Such values defer the real secret to substitution time,
-// so the literal text is not itself a credential and should not be flagged.
-func isTemplatePlaceholder(value string) bool {
+// placeholder — e.g. ${DB_HOST}, $(secret), {{ db_host }}, @DB_HOST@, or a
+// whole-value %DB_HOST%. Such values defer the real secret to substitution time,
+// so the literal text is not itself a credential and should not be flagged. The
+// paired @VAR@ form is honored embedded only for lang formats that use '@...@'
+// resource filtering (langUsesAtFilter); elsewhere it must be the whole value.
+func isTemplatePlaceholder(value, lang string) bool {
 	value = normalizeScalar(value)
-	return templatePlaceholderRe.MatchString(value) || atVarPlaceholderRe.MatchString(value)
+	if templatePlaceholderRe.MatchString(value) || pctVarPlaceholderRe.MatchString(value) {
+		return true
+	}
+	if langUsesAtFilter(lang) {
+		return atVarPlaceholderRe.MatchString(value)
+	}
+	return atVarPlaceholderWholeRe.MatchString(value)
 }
 
 // nameSignalsSecret reports whether name indicates a secret under rule: it must
@@ -314,7 +354,7 @@ func shouldIgnoreValue(value string, rule Rule) bool {
 	return false
 }
 
-func isLikelySecretValue(name, value string, rule Rule) bool {
+func isLikelySecretValue(name, value string, rule Rule, lang string) bool {
 	value = strings.TrimSpace(value)
 
 	if value == "" {
@@ -339,7 +379,7 @@ func isLikelySecretValue(name, value string, rule Rule) bool {
 		return true
 	}
 
-	if isTemplatePlaceholder(value) {
+	if isTemplatePlaceholder(value, lang) {
 		return false
 	}
 

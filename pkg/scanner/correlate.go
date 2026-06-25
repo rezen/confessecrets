@@ -12,6 +12,18 @@ import (
 // partner, alongside the rule's own tag.
 const secondaryTag = "secondary"
 
+// urlPartnerExpr matches a partner finding that names or carries a service /
+// token-endpoint URL: its name's leaf segment (the part after the last dot, so a
+// dotted path like "...arvato.url.token" with leaf "token" is not mistaken for a
+// URL while "token_url" / "service.uri" still match) reads url/uri/endpoint, or
+// its value was surfaced as a service-endpoint URL (an info: finding) or as a URL
+// carrying credentials. Shared by every built-in rule that pairs a credential
+// with the URL it authenticates against.
+const urlPartnerExpr = `let leaf = lower(last(split(name, "."))); ` +
+	`leaf contains "url" || leaf contains "uri" || ` +
+	`leaf contains "endpoint" || reason startsWith "info:" || ` +
+	`reason contains "url"`
+
 // builtinCorrelations are high-confidence credential pairings shipped by default,
 // applied to every scan after any user-configured correlations (so user rules win
 // the first-match-per-primary race). They are deliberately conservative — keyed on
@@ -37,13 +49,57 @@ var builtinCorrelations = []CorrelationConfig{
 		// URL (an info: finding) or as a URL carrying credentials. Listed after
 		// oauth-client-credentials so a client_id pairing still wins when present
 		// (first matching rule wins per primary); the URL is the fallback partner.
-		ID:    "client-secret-url",
-		Match: FindingMatcher{NameRegex: `(?i)client[_-]?secret`},
-		Partners: []FindingMatcher{{
-			Expr: `lower(name) contains "url" || lower(name) contains "uri" || ` +
-				`lower(name) contains "endpoint" || reason startsWith "info:" || ` +
-				`reason contains "url"`,
-		}},
+		ID:       "client-secret-url",
+		Match:    FindingMatcher{NameRegex: `(?i)client[_-]?secret`},
+		Partners: []FindingMatcher{{Expr: urlPartnerExpr}},
+	},
+	{
+		// A JWT paired with the service or token-endpoint URL it is presented to or
+		// issued by. A finding counts as a JWT when its value shape was detected as
+		// one (reason jwt_indicator, or gitleaks:jwt for the pattern-matched form)
+		// or its key name reads like one (a "jwt" key whose value the detector did
+		// not classify — truncated, templated, or referenced indirectly). Same URL
+		// partner test as client-secret-url.
+		ID: "jwt-url",
+		Match: FindingMatcher{Expr: `reason == "jwt_indicator" || ` +
+			`reason == "gitleaks:jwt" || lower(name) contains "jwt"`},
+		Partners: []FindingMatcher{{Expr: urlPartnerExpr}},
+	},
+	{
+		// An OAuth2 / OIDC client_id paired with the service or token-endpoint URL
+		// it authenticates against. A client_id consumed here as a primary is still
+		// available to oauth-client-credentials as a client_secret's partner (it is
+		// tagged, not removed, until folded), so the canonical secret pairing is
+		// unaffected; this only adds context when no client_secret claims it.
+		ID:       "client-id-url",
+		Match:    FindingMatcher{NameRegex: `(?i)client[_-]?id`},
+		Partners: []FindingMatcher{{Expr: urlPartnerExpr}},
+	},
+	{
+		// A password paired with both the user it belongs to and the service URL it
+		// authenticates against. Requires both partners, so it claims the primary
+		// only when the full credential context is present; the password-user and
+		// password-url fallbacks below cover the partial cases (first matching rule
+		// wins per primary, so the richer pairing is tried first).
+		ID:    "password-credentials",
+		Match: FindingMatcher{NameRegex: `(?i)passw(?:or)?d|pwd`},
+		Partners: []FindingMatcher{
+			{NameRegex: `(?i)user`},
+			{Expr: urlPartnerExpr},
+		},
+	},
+	{
+		// A password paired with just the user it belongs to (no URL nearby).
+		ID:       "password-user",
+		Match:    FindingMatcher{NameRegex: `(?i)passw(?:or)?d|pwd`},
+		Partners: []FindingMatcher{{NameRegex: `(?i)user`}},
+	},
+	{
+		// A password paired with just the service URL it authenticates against (no
+		// user nearby).
+		ID:       "password-url",
+		Match:    FindingMatcher{NameRegex: `(?i)passw(?:or)?d|pwd`},
+		Partners: []FindingMatcher{{Expr: urlPartnerExpr}},
 	},
 	{
 		// OAuth1 consumer credentials.
@@ -319,6 +375,13 @@ func (r Correlation) partnersFor(findings []Finding, i, window int, consumed []b
 // partner's redacted Value; the non-secret ClientID/Username/URL take its raw value.
 func enrichMetaFromPartner(primary *Finding, partner Finding) {
 	name := strings.ToLower(partner.Name)
+	// The URL classification keys off the leaf segment (after the last dot), matching
+	// the client-secret-url partner matcher, so a dotted path like "...url.token"
+	// (leaf "token") is not treated as a URL.
+	leaf := name
+	if idx := strings.LastIndexByte(name, '.'); idx >= 0 {
+		leaf = name[idx+1:]
+	}
 
 	var dst *string
 	var src string
@@ -330,8 +393,8 @@ func enrichMetaFromPartner(primary *Finding, partner Finding) {
 		dst, src = &primaryMeta(primary).ClientID, partner.RawValue
 	case strings.Contains(name, "user"):
 		dst, src = &primaryMeta(primary).Username, partner.RawValue
-	case strings.Contains(name, "url"), strings.Contains(name, "uri"),
-		strings.Contains(name, "endpoint"),
+	case strings.Contains(leaf, "url"), strings.Contains(leaf, "uri"),
+		strings.Contains(leaf, "endpoint"),
 		strings.HasPrefix(partner.Reason, "info:"), strings.Contains(partner.Reason, "url"):
 		dst, src = &primaryMeta(primary).URL, partner.RawValue
 	default:

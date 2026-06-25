@@ -21,6 +21,12 @@ type Config struct {
 	// file; on a match the primary embeds the partners (which are dropped from the
 	// top-level results) and all are tagged. See CorrelationConfig.
 	Correlations []CorrelationConfig `yaml:"correlations"`
+	// Info is an optional list of informational-finding rules. Each is an expr-lang
+	// predicate over a value and its key name that, on a match, surfaces the value
+	// as a levelInfo finding ("info:<id>") — a recognized non-credential identifier
+	// such as a cloud account/tenant/subscription ID. They extend a built-in set
+	// (see builtinInfoRules) and are evaluated before it. See InfoRuleConfig.
+	Info []InfoRuleConfig `yaml:"info"`
 	// Stopwords are extra non-secret words applied across all rules. As with the
 	// built-in stopword set (gitleaks' DefaultStopWords), a name-driven candidate
 	// is dropped when its value contains (case-insensitively) any of these as a
@@ -227,6 +233,44 @@ type CustomDetector struct {
 	MinEntropy     float64
 }
 
+// InfoRuleConfig is one informational-finding rule as parsed from YAML. A rule
+// fires when its expr-lang Match predicate (evaluated over the value and its key
+// name) is true, surfacing the value as a levelInfo finding reasoned
+// "info:<id>". It accepts two YAML forms: a mapping with id/match keys, or a bare
+// scalar treated as the match expression (the id then defaults to the expression
+// itself). See InfoRule for the variables and helpers a Match can reference.
+type InfoRuleConfig struct {
+	// ID labels the rule and appears in findings as "info:<id>".
+	ID string `yaml:"id"`
+	// Match is the expr-lang predicate; a true result yields the info finding.
+	Match string `yaml:"match"`
+}
+
+// UnmarshalYAML accepts either a scalar match expression (id defaults to the
+// expression) or an {id, match} mapping.
+func (c *InfoRuleConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		c.Match = value.Value
+		c.ID = value.Value
+		return nil
+	}
+
+	var m struct {
+		ID    string `yaml:"id"`
+		Match string `yaml:"match"`
+	}
+	if err := value.Decode(&m); err != nil {
+		return err
+	}
+
+	c.ID = m.ID
+	c.Match = m.Match
+	if c.ID == "" {
+		c.ID = m.Match
+	}
+	return nil
+}
+
 // CorrelationConfig defines a relationship between findings: a primary finding
 // (matched by Match, or the When expression's `current`) is enriched when every
 // partner is present among the recent prior findings of the same file. It accepts
@@ -284,6 +328,9 @@ type RuleSet struct {
 	Detectors    []CustomDetector
 	Filters      []*Filter
 	Correlations []Correlation
+	// InfoRules recognize non-credential identifiers (cloud account/tenant/
+	// subscription IDs) and surface them as levelInfo findings. See InfoRule.
+	InfoRules []InfoRule
 }
 
 // prevWindow is how many recent findings are carried as correlation context: the

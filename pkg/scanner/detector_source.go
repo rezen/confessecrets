@@ -53,14 +53,14 @@ func envNameFromLookup(text string) string {
 // strings) is common. It accepts a value only if it carries a recognized secret
 // reason, or it passes the standard secret heuristics AND contains no whitespace
 // — real opaque tokens rarely do, while prompts like "Password: " do.
-func looksLikeArgSecret(name, value string, rule Rule) bool {
+func looksLikeArgSecret(name, value string, rule Rule, lang string) bool {
 	if classifySecretReason(value) != "" {
 		return true
 	}
 	if strings.ContainsAny(value, " \t\r\n") {
 		return false
 	}
-	return isLikelySecretValue(name, value, rule)
+	return isLikelySecretValue(name, value, rule, lang)
 }
 
 // SourceDetector scans general-purpose source code (Python, JavaScript,
@@ -494,6 +494,7 @@ func (l *loadedLang) detect(file string, data []byte, set RuleSet) []Finding {
 // the query itself).
 func (l *loadedLang) detectNamed(file string, data []byte, tree *ts.Tree, lines lineIndex, rules []Rule) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 
 	for _, m := range l.pairQ.Execute(tree) {
 		nameText, valueText, valueNode, line, ok := pairFromMatch(m, data, lines)
@@ -515,12 +516,12 @@ func (l *loadedLang) detectNamed(file string, data []byte, tree *ts.Tree, lines 
 			if !nameSignalsSecret(name, rule) {
 				continue
 			}
-			if shouldSkipValue(value, rule) {
+			if shouldSkipValue(value, rule, lang) {
 				continue
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(name, value, rule) {
+			if reason == "" && !isLikelySecretValue(name, value, rule, lang) {
 				continue
 			}
 			if reason == "" {
@@ -612,6 +613,7 @@ func (l *loadedLang) detectEnvFallback(file string, data []byte, tree *ts.Tree, 
 	}
 
 	var findings []Finding
+	lang := languageName(file)
 
 	for _, m := range l.envQ.Execute(tree) {
 		var fn, envName, value string
@@ -645,12 +647,12 @@ func (l *loadedLang) detectEnvFallback(file string, data []byte, tree *ts.Tree, 
 			if !nameSignalsSecret(name, rule) {
 				continue
 			}
-			if shouldSkipValue(val, rule) {
+			if shouldSkipValue(val, rule, lang) {
 				continue
 			}
 
 			reason := classifySecretReason(val)
-			if reason == "" && !isLikelySecretValue(name, val, rule) {
+			if reason == "" && !isLikelySecretValue(name, val, rule, lang) {
 				continue
 			}
 			if reason == "" {
@@ -684,6 +686,7 @@ func (l *loadedLang) detectCallArgSecret(file string, data []byte, tree *ts.Tree
 	}
 
 	var findings []Finding
+	lang := languageName(file)
 
 	for _, m := range l.callArgQ.Execute(tree) {
 		var nameText, fn, valueText string
@@ -720,7 +723,7 @@ func (l *loadedLang) detectCallArgSecret(file string, data []byte, tree *ts.Tree
 			if !nameSignalsSecret(name, rule) {
 				continue
 			}
-			if shouldSkipValue(value, rule) || !looksLikeArgSecret(name, value, rule) {
+			if shouldSkipValue(value, rule, lang) || !looksLikeArgSecret(name, value, rule, lang) {
 				continue
 			}
 
@@ -755,6 +758,7 @@ func (l *loadedLang) detectLogicalDefault(file string, data []byte, tree *ts.Tre
 	}
 
 	var findings []Finding
+	lang := languageName(file)
 
 	for _, m := range l.logicalQ.Execute(tree) {
 		var lookup, value string
@@ -791,7 +795,7 @@ func (l *loadedLang) detectLogicalDefault(file string, data []byte, tree *ts.Tre
 			if !nameSignalsSecret(name, rule) {
 				continue
 			}
-			if shouldSkipValue(val, rule) || !looksLikeArgSecret(name, val, rule) {
+			if shouldSkipValue(val, rule, lang) || !looksLikeArgSecret(name, val, rule, lang) {
 				continue
 			}
 

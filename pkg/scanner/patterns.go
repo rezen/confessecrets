@@ -110,6 +110,55 @@ var infoURLPatterns = []ValuePattern{
 	{"supabase-functions", regexp.MustCompile(`(?i)\b[a-z0-9]+\.supabase\.co/functions/v1/[a-z0-9_-]+`)},
 	// DigitalOcean Functions, e.g. faas-nyc1-abc123.doserverless.co
 	{"digitalocean-functions", regexp.MustCompile(`(?i)\bfaas-[a-z0-9]+-[a-z0-9]+\.doserverless\.co\b`)},
+
+	// Fly.io, e.g. empty-sea-2541.fly.dev
+	{"fly-io", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.fly\.dev\b`)},
+	// Render, e.g. my-service.onrender.com
+	{"render", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.onrender\.com\b`)},
+	// Railway. Newer service domains use .up.railway.app; older use .railway.app
+	{"railway", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(?:up\.)?railway\.app\b`)},
+	// Koyeb, e.g. my-app-org.koyeb.app
+	{"koyeb", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.koyeb\.app\b`)},
+	// AWS Amplify hosting, e.g. main.d1a2b3c4.amplifyapp.com
+	{"aws-amplify", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.amplifyapp\.com\b`)},
+
+	// ---- Edge / isolate runtimes ----
+	// Deno Deploy, e.g. my-project.deno.dev (and <project>-<id>.deno.dev)
+	{"deno-deploy", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.deno\.dev\b`)},
+	// Cloudflare Pages, e.g. my-site.pages.dev
+	{"cloudflare-pages", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.pages\.dev\b`)},
+	// Fastly Compute, e.g. my-service.edgecompute.app
+	{"fastly-compute", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.edgecompute\.app\b`)},
+	// Fermyon Cloud (Spin/WASM), e.g. my-app.fermyon.app
+	{"fermyon-cloud", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.fermyon\.app\b`)},
+	// Modal web endpoints, e.g. workspace--app-fn.modal.run
+	{"modal", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.modal\.run\b`)},
+	// Val Town, e.g. user-valname.web.val.run
+	{"val-town", regexp.MustCompile(`(?i)\b(?:[a-z0-9][a-z0-9-]*\.)+val\.run\b`)},
+
+	// ---- BaaS function/HTTP endpoints ----
+	// Firebase Hosting / functions rewrites, e.g. my-app.web.app or *.firebaseapp.com
+	{"firebase-hosting", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(?:web\.app|firebaseapp\.com)\b`)},
+	// Convex HTTP actions (.convex.site) and API (.convex.cloud)
+	{"convex", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.convex\.(?:site|cloud)\b`)},
+	// Twilio Functions, e.g. service-1234.twil.io
+	{"twilio-functions", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.twil\.io\b`)},
+
+	// ---- AWS edge functions (run on AWS-owned infra, see notes) ----
+	// CloudFront distribution domains often front CloudFront Functions / Lambda@Edge
+	{"aws-cloudfront", regexp.MustCompile(`(?i)\b[a-z0-9]+\.cloudfront\.net\b`)},
+
+	// ---- Regional / enterprise clouds (BEST-EFFORT — verify vs real samples) ----
+	// Scaleway Functions, e.g. <ns>-<fn>.functions.fnc.fr-par.scw.cloud
+	{"scaleway-functions", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.functions\.fnc\.[a-z0-9-]+\.scw\.cloud\b`)},
+	// IBM Cloud Code Engine, e.g. app.abcd1234.us-south.codeengine.appdomain.cloud
+	{"ibm-code-engine", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.[a-z0-9]+\.[a-z0-9-]+\.codeengine\.appdomain\.cloud\b`)},
+	// Alibaba Function Compute, e.g. <account-id>.<region>.fc.aliyuncs.com
+	{"alibaba-fc", regexp.MustCompile(`(?i)\b[0-9]+\.[a-z0-9-]+\.fc\.aliyuncs\.com\b`)},
+	// Oracle Functions via OCI API Gateway, e.g. <id>.apigateway.<region>.oci.customer-oci.com
+	{"oracle-apigateway", regexp.MustCompile(`(?i)\b[a-z0-9]+\.apigateway\.[a-z0-9-]+\.oci\.customer-oci\.com\b`)},
+	// Tencent SCF via API Gateway, e.g. service-xxxx-1250000000.<region>.apigw.tencentcs.com
+	{"tencent-scf", regexp.MustCompile(`(?i)\bservice-[a-z0-9]+-[0-9]+\.[a-z0-9-]+\.apigw\.tencentcs\.com\b`)},
 }
 
 // matchInfoURL returns the ID of the first info URL pattern whose regex matches
@@ -166,6 +215,14 @@ func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 		return nil
 	}
 
+	// Recognized non-credential identifiers (cloud account/tenant/subscription IDs)
+	// are surfaced at info level. These name-gated rules are data-driven and run
+	// first so a GUID/12-digit/billing-ID value is never mistaken for a
+	// high-entropy secret. See InfoRule and builtinInfoRules.
+	if id := matchInfoRule(focus.Name, value, set.InfoRules); id != "" {
+		return []Finding{infoFinding(focus, value, id)}
+	}
+
 	if id := matchValuePattern(value); id != "" {
 		return []Finding{newFinding(
 			focus.File,
@@ -207,20 +264,27 @@ func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 	// Service endpoint URLs are informational rather than secret: surface them at
 	// info level so they don't carry the high severity of a credential.
 	if id := matchInfoURL(value); id != "" {
-		f := newFinding(
-			focus.File,
-			focus.Path,
-			"value_pattern",
-			"value_pattern",
-			focus.Name,
-			value,
-			"info:"+id,
-		)
-		f.Level = levelInfo
-		return []Finding{f}
+		return []Finding{infoFinding(focus, value, id)}
 	}
 
 	return nil
+}
+
+// infoFinding builds a levelInfo finding for value with reason "info:<id>",
+// marking a recognized non-credential match (a service URL or a cloud account /
+// tenant / subscription identifier) rather than a secret.
+func infoFinding(focus ExaminationFocus, value, id string) Finding {
+	f := newFinding(
+		focus.File,
+		focus.Path,
+		"value_pattern",
+		"value_pattern",
+		focus.Name,
+		value,
+		"info:"+id,
+	)
+	f.Level = levelInfo
+	return f
 }
 
 // maxHighEntropyLen bounds the generic high-entropy detector to token-sized
