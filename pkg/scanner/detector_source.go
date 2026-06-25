@@ -98,7 +98,12 @@ type sourceLang struct {
 	exts []string            // file extensions handled, lowercase incl. dot
 
 	// pairQuery captures @name and @value, where @value is constrained to string
-	// literal node kinds so call/identifier right-hand sides never match.
+	// literal node kinds so call/identifier right-hand sides never match. It also
+	// reaches string literals nested one level inside a list/array/tuple/set
+	// literal assigned to the name (passwords = ["a", "b"]); tree-sitter yields one
+	// match per element, so each element is reported. The only call form admitted
+	// is a language's collection builder (Kotlin listOf/arrayOf, Rust vec!), gated
+	// by a #match?/#eq? predicate so arbitrary calls still don't match.
 	pairQuery string
 
 	// valueQuery captures @value over every string literal, for value-shape
@@ -137,6 +142,11 @@ var sourceLangs = []*sourceLang{
 (assignment left: (identifier) @name right: (string) @value)
 (keyword_argument name: (identifier) @name value: (string) @value)
 (pair key: (string) @name value: (string) @value)
+(assignment left: (identifier) @name right: (list (string) @value))
+(assignment left: (identifier) @name right: (tuple (string) @value))
+(assignment left: (identifier) @name right: (set (string) @value))
+(pair key: (string) @name value: (list (string) @value))
+(pair key: (string) @name value: (tuple (string) @value))
 `,
 		valueQuery:   `(string) @value`,
 		envQuery:     `(call function: (_) @fn arguments: (argument_list (string) @envname (string) @value))`,
@@ -153,6 +163,11 @@ var sourceLangs = []*sourceLang{
 (assignment_expression left: (member_expression property: (property_identifier) @name) right: (string) @value)
 (pair key: (property_identifier) @name value: (string) @value)
 (pair key: (string) @name value: (string) @value)
+(variable_declarator name: (identifier) @name value: (array (string) @value))
+(assignment_expression left: (identifier) @name right: (array (string) @value))
+(assignment_expression left: (member_expression property: (property_identifier) @name) right: (array (string) @value))
+(pair key: (property_identifier) @name value: (array (string) @value))
+(pair key: (string) @name value: (array (string) @value))
 `,
 		valueQuery: `(string) @value`,
 		envQuery:   `(call_expression function: (_) @fn arguments: (arguments (string) @envname (string) @value))`,
@@ -172,6 +187,11 @@ var sourceLangs = []*sourceLang{
 (assignment_expression left: (member_expression property: (property_identifier) @name) right: (string) @value)
 (pair key: (property_identifier) @name value: (string) @value)
 (pair key: (string) @name value: (string) @value)
+(variable_declarator name: (identifier) @name value: (array (string) @value))
+(assignment_expression left: (identifier) @name right: (array (string) @value))
+(assignment_expression left: (member_expression property: (property_identifier) @name) right: (array (string) @value))
+(pair key: (property_identifier) @name value: (array (string) @value))
+(pair key: (string) @name value: (array (string) @value))
 `,
 		valueQuery: `(string) @value`,
 		envQuery:   `(call_expression function: (_) @fn arguments: (arguments (string) @envname (string) @value))`,
@@ -191,6 +211,12 @@ var sourceLangs = []*sourceLang{
 (const_spec name: (identifier) @name value: (expression_list (interpreted_string_literal) @value))
 (var_spec name: (identifier) @name value: (expression_list (interpreted_string_literal) @value))
 (keyed_element (literal_element (identifier) @name) (literal_element (interpreted_string_literal) @value))
+(short_var_declaration left: (expression_list (identifier) @name) right: (expression_list (composite_literal (literal_value (literal_element (interpreted_string_literal) @value)))))
+(short_var_declaration left: (expression_list (identifier) @name) right: (expression_list (composite_literal (literal_value (literal_element (raw_string_literal) @value)))))
+(assignment_statement left: (expression_list (identifier) @name) right: (expression_list (composite_literal (literal_value (literal_element (interpreted_string_literal) @value)))))
+(var_spec name: (identifier) @name value: (expression_list (composite_literal (literal_value (literal_element (interpreted_string_literal) @value)))))
+(const_spec name: (identifier) @name value: (expression_list (composite_literal (literal_value (literal_element (interpreted_string_literal) @value)))))
+(keyed_element (literal_element (identifier) @name) (literal_element (composite_literal (literal_value (literal_element (interpreted_string_literal) @value)))))
 `,
 		valueQuery: `(interpreted_string_literal) @value (raw_string_literal) @value`,
 		envQuery:   `(call_expression function: (_) @fn arguments: (argument_list (interpreted_string_literal) @envname (interpreted_string_literal) @value))`,
@@ -208,6 +234,10 @@ var sourceLangs = []*sourceLang{
 		pairQuery: `
 (variable_declarator name: (identifier) @name value: (string_literal) @value)
 (assignment_expression left: (identifier) @name right: (string_literal) @value)
+(variable_declarator name: (identifier) @name value: (array_initializer (string_literal) @value))
+(variable_declarator name: (identifier) @name value: (array_creation_expression (array_initializer (string_literal) @value)))
+(assignment_expression left: (identifier) @name right: (array_initializer (string_literal) @value))
+(assignment_expression left: (identifier) @name right: (array_creation_expression (array_initializer (string_literal) @value)))
 `,
 		valueQuery: `(string_literal) @value`,
 		envQuery:   `(method_invocation name: (identifier) @fn arguments: (argument_list (string_literal) @envname (string_literal) @value))`,
@@ -224,6 +254,13 @@ var sourceLangs = []*sourceLang{
 (variable_declarator (identifier) @name (string_literal) @value)
 (variable_declarator (identifier) @name (verbatim_string_literal) @value)
 (assignment_expression left: (identifier) @name right: (string_literal) @value)
+(variable_declarator (identifier) @name (initializer_expression (string_literal) @value))
+(variable_declarator (identifier) @name (initializer_expression (verbatim_string_literal) @value))
+(variable_declarator (identifier) @name (implicit_array_creation_expression (initializer_expression (string_literal) @value)))
+(variable_declarator (identifier) @name (array_creation_expression (initializer_expression (string_literal) @value)))
+(assignment_expression left: (identifier) @name right: (initializer_expression (string_literal) @value))
+(assignment_expression left: (identifier) @name right: (implicit_array_creation_expression (initializer_expression (string_literal) @value)))
+(assignment_expression left: (identifier) @name right: (array_creation_expression (initializer_expression (string_literal) @value)))
 `,
 		valueQuery: `(string_literal) @value (verbatim_string_literal) @value`,
 		envQuery:   `(invocation_expression function: (_) @fn arguments: (argument_list (argument (string_literal) @envname) (argument (string_literal) @value)))`,
@@ -244,6 +281,12 @@ var sourceLangs = []*sourceLang{
 (pair key: (string) @name value: (string) @value)
 (pair key: (hash_key_symbol) @name value: (string) @value)
 (pair key: (simple_symbol) @name value: (string) @value)
+(assignment left: (identifier) @name right: (array (string) @value))
+(assignment left: (instance_variable) @name right: (array (string) @value))
+(assignment left: (constant) @name right: (array (string) @value))
+(pair key: (string) @name value: (array (string) @value))
+(pair key: (hash_key_symbol) @name value: (array (string) @value))
+(pair key: (simple_symbol) @name value: (array (string) @value))
 `,
 		valueQuery: `(string) @value`,
 		callArgQuery: `
@@ -269,6 +312,8 @@ var sourceLangs = []*sourceLang{
 (array_element_initializer (string) @name (string) @value)
 (const_element (name) @name (encapsed_string) @value)
 (const_element (name) @name (string) @value)
+(assignment_expression left: (variable_name) @name right: (array_creation_expression (array_element_initializer (encapsed_string) @value)))
+(assignment_expression left: (variable_name) @name right: (array_creation_expression (array_element_initializer (string) @value)))
 `,
 		valueQuery: `(encapsed_string) @value (string) @value`,
 		callArgQuery: `
@@ -288,6 +333,7 @@ var sourceLangs = []*sourceLang{
 		// string_literal is a positional child after `=`.
 		pairQuery: `
 (property_declaration (variable_declaration (simple_identifier) @name) (string_literal) @value)
+(property_declaration (variable_declaration (simple_identifier) @name) (call_expression (simple_identifier) @fn (call_suffix (value_arguments (value_argument (string_literal) @value)))) (#match? @fn "^(listOf|listOfNotNull|mutableListOf|arrayOf|arrayOfNulls|setOf|mutableSetOf|sortedSetOf|hashSetOf|sequenceOf)$"))
 `,
 		valueQuery: `(string_literal) @value`,
 		callArgQuery: `
@@ -304,6 +350,11 @@ var sourceLangs = []*sourceLang{
 		pairQuery: `
 (let_declaration pattern: (identifier) @name value: (string_literal) @value)
 (const_item name: (identifier) @name value: (string_literal) @value)
+(let_declaration pattern: (identifier) @name value: (array_expression (string_literal) @value))
+(let_declaration pattern: (identifier) @name value: (array_expression (raw_string_literal) @value))
+(const_item name: (identifier) @name value: (array_expression (string_literal) @value))
+(let_declaration pattern: (identifier) @name value: (macro_invocation (identifier) @mac (token_tree (string_literal) @value)) (#eq? @mac "vec"))
+(const_item name: (identifier) @name value: (macro_invocation (identifier) @mac (token_tree (string_literal) @value)) (#eq? @mac "vec"))
 `,
 		valueQuery: `(string_literal) @value (raw_string_literal) @value`,
 		callArgQuery: `
