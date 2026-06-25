@@ -144,7 +144,7 @@ func TestIsLikelySecretValue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isLikelySecretValue("opaque", tt.value, rule); got != tt.want {
+			if got := isLikelySecretValue("opaque", tt.value, rule, ""); got != tt.want {
 				t.Errorf("isLikelySecretValue(%q, %d) = %v, want %v", tt.value, minLen, got, tt.want)
 			}
 		})
@@ -152,40 +152,50 @@ func TestIsLikelySecretValue(t *testing.T) {
 }
 
 // TestIsTemplatePlaceholder covers the variable/template placeholder detection
-// used to skip substitution targets: the brace/paren forms match anywhere in the
-// value, while the single-char @VAR@ / %VAR% forms match only a whole value so
-// they don't suppress real secrets that merely contain '@' or '%'.
+// used to skip substitution targets: the brace/paren forms match anywhere in any
+// language, the paired @VAR@ form matches embedded only for the '@...@'
+// resource-filtering formats (xml/properties) and whole-value elsewhere, while
+// %VAR% always matches only a whole value so it doesn't suppress real secrets
+// (such as url-encoded passwords) that contain '%'.
 func TestIsTemplatePlaceholder(t *testing.T) {
 	tests := []struct {
 		name  string
 		value string
+		lang  string
 		want  bool
 	}{
-		// Brace/paren forms — matched anywhere in the value.
-		{"shell var", "${DB_HOST}", true},
-		{"shell var quoted", `"${DB_HOST}"`, true},
-		{"command substitution", "$(cat /run/secrets/pw)", true},
-		{"mustache", "{{ db_host }}", true},
-		{"go template", "{{ .Values.password }}", true},
-		{"embedded shell var", "jdbc:mysql://h/db?password=${PW}", true},
+		// Brace/paren forms — matched anywhere, regardless of language.
+		{"shell var", "${DB_HOST}", "", true},
+		{"shell var quoted", `"${DB_HOST}"`, "", true},
+		{"command substitution", "$(cat /run/secrets/pw)", "", true},
+		{"mustache", "{{ db_host }}", "", true},
+		{"go template", "{{ .Values.password }}", "go", true},
+		{"embedded shell var", "jdbc:mysql://h/db?password=${PW}", "", true},
 
-		// Single-char forms — only a whole-value match counts.
-		{"at var", "@DB_HOST@", true},
-		{"percent var", "%DB_HOST%", true},
-		{"at var with dots", "@project.version@", true},
+		// Whole-value @VAR@ — counts in any language.
+		{"at var", "@DB_HOST@", "", true},
+		{"at var with dots", "@project.version@", "python", true},
 
-		// Negative: not placeholders, and embedded @/% that must not over-match.
-		{"plain secret", "sk_live_8Fh2kLmQ9zXc4Tg", false},
-		{"email-ish", "user@example.com", false},
-		{"url-encoded password", "p%41ss%2Fword", false},
-		{"embedded at not whole value", "host=@DB_HOST@/db", false},
-		{"empty", "", false},
+		// Embedded @VAR@ — placeholder only for @...@ resource-filtering formats.
+		{"embedded at var, xml", "host=@DB_HOST@/db", "xml", true},
+		{"at var in url, properties", "http://@NAME_LOWER@-ws.example.net:20000", "properties", true},
+		{"embedded at var, yaml", "host=@DB_HOST@/db", "yaml", false},
+		{"at var in url, python", "http://@NAME_LOWER@-ws.example.net:20000", "python", false},
+
+		// %VAR% — only a whole-value match counts, even in xml.
+		{"percent var", "%DB_HOST%", "xml", true},
+
+		// Negative: not placeholders, and embedded % that must not over-match.
+		{"plain secret", "sk_live_8Fh2kLmQ9zXc4Tg", "xml", false},
+		{"email-ish", "user@example.com", "xml", false},
+		{"url-encoded password", "p%41ss%2Fword", "properties", false},
+		{"empty", "", "xml", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isTemplatePlaceholder(tt.value); got != tt.want {
-				t.Errorf("isTemplatePlaceholder(%q) = %v, want %v", tt.value, got, tt.want)
+			if got := isTemplatePlaceholder(tt.value, tt.lang); got != tt.want {
+				t.Errorf("isTemplatePlaceholder(%q, %q) = %v, want %v", tt.value, tt.lang, got, tt.want)
 			}
 		})
 	}
@@ -200,22 +210,22 @@ func TestIsLikelySecretValueEntropyGate(t *testing.T) {
 
 	// Without a gate both pass (long enough, not placeholders).
 	open := Rule{MinValueLen: 8}
-	if !isLikelySecretValue("token", lowVariety, open) {
+	if !isLikelySecretValue("token", lowVariety, open, "") {
 		t.Errorf("ungated low-variety value should pass")
 	}
 
 	// With a gate the low-variety value is rejected, the high-variety one kept.
 	gated := Rule{MinValueLen: 8, MinEntropy: 3.0}
-	if isLikelySecretValue("token", lowVariety, gated) {
+	if isLikelySecretValue("token", lowVariety, gated, "") {
 		t.Errorf("gated low-variety value should be rejected")
 	}
-	if !isLikelySecretValue("token", highVariety, gated) {
+	if !isLikelySecretValue("token", highVariety, gated, "") {
 		t.Errorf("gated high-variety value should pass")
 	}
 
 	// A value carrying a definite secret reason bypasses the gate even though it
 	// is low-variety, because classifySecretReason short-circuits first.
-	if !isLikelySecretValue("token", "-----BEGIN RSA PRIVATE KEY-----", gated) {
+	if !isLikelySecretValue("token", "-----BEGIN RSA PRIVATE KEY-----", gated, "") {
 		t.Errorf("definite-secret value should bypass the entropy gate")
 	}
 }
@@ -226,29 +236,29 @@ func TestIsLikelySecretValueEntropyGate(t *testing.T) {
 func TestStopwords(t *testing.T) {
 	// A built-in gitleaks stopword is matched by substring even when embedded.
 	open := Rule{MinValueLen: 8}
-	if isLikelySecretValue("token", "Kq7changemeVp9", open) {
+	if isLikelySecretValue("token", "Kq7changemeVp9", open, "") {
 		t.Errorf("value containing a built-in stopword should be rejected")
 	}
 	// A value clear of any built-in stopword passes without extra config.
-	if !isLikelySecretValue("token", "Kq7Vbz9XpQr", open) {
+	if !isLikelySecretValue("token", "Kq7Vbz9XpQr", open, "") {
 		t.Errorf("stopword-free value should pass")
 	}
 
 	// Extra stopwords extend the built-in set and are matched the same way:
 	// case-insensitively, by substring.
 	gated := Rule{MinValueLen: 8, Stopwords: compileStopwords([]string{"redacted", "tbd"})}
-	if isLikelySecretValue("token", "Kq7redactedVp9", gated) {
+	if isLikelySecretValue("token", "Kq7redactedVp9", gated, "") {
 		t.Errorf("value containing a configured stopword should be rejected")
 	}
-	if isLikelySecretValue("token", "Kq7REDACTEDVp9", gated) {
+	if isLikelySecretValue("token", "Kq7REDACTEDVp9", gated, "") {
 		t.Errorf("configured stopword should match case-insensitively")
 	}
 	// Built-ins still apply when extras are configured.
-	if isLikelySecretValue("token", "Kq7changemeVp9", gated) {
+	if isLikelySecretValue("token", "Kq7changemeVp9", gated, "") {
 		t.Errorf("built-in stopword should still be rejected")
 	}
 	// A value matching neither built-in nor extra stopwords passes.
-	if !isLikelySecretValue("token", "Kq7Vbz9XpQr", gated) {
+	if !isLikelySecretValue("token", "Kq7Vbz9XpQr", gated, "") {
 		t.Errorf("non-stopword value should pass")
 	}
 }
@@ -326,18 +336,18 @@ func TestIsLikelySecretValueSimilarityGate(t *testing.T) {
 
 	// Near-echo: "Kq7Vbz9Xp1" is highly similar to "Kq7Vbz9Xp" -> dropped. (An
 	// opaque, stopword-free pair is used so only the similarity gate is at play.)
-	if isLikelySecretValue("Kq7Vbz9Xp", "Kq7Vbz9Xp1", gated) {
+	if isLikelySecretValue("Kq7Vbz9Xp", "Kq7Vbz9Xp1", gated, "") {
 		t.Errorf("near-echo value should be dropped by the similarity gate")
 	}
 
 	// A real secret is dissimilar from its key name -> kept.
-	if !isLikelySecretValue("Kq7Vbz9Xp", "Xk9$mQ2vLp7wRt4z", gated) {
+	if !isLikelySecretValue("Kq7Vbz9Xp", "Xk9$mQ2vLp7wRt4z", gated, "") {
 		t.Errorf("dissimilar value should pass the similarity gate")
 	}
 
 	// Without the gate the near-echo would survive.
 	open := Rule{MinValueLen: 8}
-	if !isLikelySecretValue("Kq7Vbz9Xp", "Kq7Vbz9Xp1", open) {
+	if !isLikelySecretValue("Kq7Vbz9Xp", "Kq7Vbz9Xp1", open, "") {
 		t.Errorf("near-echo should pass when the similarity gate is disabled")
 	}
 }
@@ -678,6 +688,227 @@ func TestInfoURLYieldsToSecretValue(t *testing.T) {
 	}
 	if findings[0].Level != levelHigh || findings[0].Reason != "gitleaks:aws-access-token" {
 		t.Errorf("secret token must win over info URL, got level=%q reason=%q", findings[0].Level, findings[0].Reason)
+	}
+}
+
+func TestCustomInfoRuleFromConfig(t *testing.T) {
+	// A user-defined info rule, added purely via config, surfaces a Datadog org ID
+	// (numeric, under a datadog org-id key) as an info finding.
+	set, err := CompileConfig(Config{
+		Info: []InfoRuleConfig{
+			{ID: "datadog-org-id", Match: `"datadog" in words(name) && "org" in words(name) && value matches "^[0-9]{4,8}$"`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileConfig: %v", err)
+	}
+
+	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:1", Name: "datadog_org_id", Value: "123456"}, set)
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding, got %+v", findings)
+	}
+	if findings[0].Level != levelInfo || findings[0].Reason != "info:datadog-org-id" {
+		t.Errorf("got level=%q reason=%q, want info / info:datadog-org-id", findings[0].Level, findings[0].Reason)
+	}
+
+	// Built-in rules still apply alongside the custom one.
+	builtin := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:2", Name: "aws_account_id", Value: "123456789012"}, set)
+	if len(builtin) != 1 || builtin[0].Reason != "info:aws-account-id" {
+		t.Errorf("built-in rule lost: got %+v", builtin)
+	}
+}
+
+func TestCompileInfoRuleErrors(t *testing.T) {
+	if _, err := compileInfoRules([]InfoRuleConfig{{ID: "bad", Match: `value matches (`}}); err == nil {
+		t.Error("expected error for malformed expression")
+	}
+	if _, err := compileInfoRules([]InfoRuleConfig{{ID: "nonbool", Match: `value`}}); err == nil {
+		t.Error("expected error for non-boolean expression")
+	}
+	if _, err := compileInfoRules([]InfoRuleConfig{{Match: `value == ""`}}); err == nil {
+		t.Error("expected error for rule missing an id")
+	}
+}
+
+func TestDetectSubscriptionIDInfo(t *testing.T) {
+	const guid = "2decc6cf-3b1b-4f4a-8b7c-1f2e3d4c5b6a"
+
+	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantHit bool
+	}{
+		{"snake case", "subscription_id", guid, true},
+		{"camel case", "subscriptionId", guid, true},
+		{"kebab case", "subscription-id", guid, true},
+		{"pascal case", "SubscriptionID", guid, true},
+		{"guid under unrelated key not flagged", "request_id", guid, false},
+		{"non-guid value under subscription key not flagged", "subscription_id", "not-a-guid", false},
+		{"guid substring of larger token not flagged", "subscription_id", guid + "-extra", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:3", Name: tc.key, Value: tc.value}, infoRuleSet(t))
+
+			if !tc.wantHit {
+				if len(findings) != 0 {
+					t.Fatalf("expected no finding for %s=%q, got %+v", tc.key, tc.value, findings)
+				}
+				return
+			}
+
+			if len(findings) != 1 {
+				t.Fatalf("expected one finding for %s=%q, got %+v", tc.key, tc.value, findings)
+			}
+			f := findings[0]
+			if f.Level != levelInfo {
+				t.Errorf("level = %q, want %q", f.Level, levelInfo)
+			}
+			if f.Reason != "info:azure-subscription-id" {
+				t.Errorf("reason = %q, want info:azure-subscription-id", f.Reason)
+			}
+		})
+	}
+}
+
+// infoRuleSet returns a RuleSet carrying the built-in info rules, for exercising
+// the name-gated identifier findings through detectValuePatterns.
+func infoRuleSet(t *testing.T) RuleSet {
+	t.Helper()
+	rules, err := compileInfoRules(nil)
+	if err != nil {
+		t.Fatalf("compileInfoRules: %v", err)
+	}
+	return RuleSet{InfoRules: rules}
+}
+
+func TestDetectTenantIDInfo(t *testing.T) {
+	const guid = "2decc6cf-3b1b-4f4a-8b7c-1f2e3d4c5b6a"
+
+	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantHit bool
+	}{
+		{"snake case", "tenant_id", guid, true},
+		{"camel case", "tenantId", guid, true},
+		{"pascal case", "TenantID", guid, true},
+		{"guid under unrelated key not flagged", "user_id", guid, false},
+		{"non-guid value not flagged", "tenant_id", "not-a-guid", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:5", Name: tc.key, Value: tc.value}, infoRuleSet(t))
+
+			if !tc.wantHit {
+				if len(findings) != 0 {
+					t.Fatalf("expected no finding for %s=%q, got %+v", tc.key, tc.value, findings)
+				}
+				return
+			}
+
+			if len(findings) != 1 {
+				t.Fatalf("expected one finding for %s=%q, got %+v", tc.key, tc.value, findings)
+			}
+			f := findings[0]
+			if f.Level != levelInfo {
+				t.Errorf("level = %q, want %q", f.Level, levelInfo)
+			}
+			if f.Reason != "info:azure-tenant-id" {
+				t.Errorf("reason = %q, want info:azure-tenant-id", f.Reason)
+			}
+		})
+	}
+}
+
+func TestDetectGCPAccountIDInfo(t *testing.T) {
+	const billing = "01A2B3-C4D5E6-F70819"
+
+	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantHit bool
+	}{
+		{"snake case", "gcp_account_id", billing, true},
+		{"camel case", "gcpAccountId", billing, true},
+		{"lowercased value", "gcp_account_id", "01a2b3-c4d5e6-f70819", true},
+		{"generic account_id not flagged", "account_id", billing, false},
+		{"aws account key not flagged", "aws_account_id", billing, false},
+		{"wrong shape not flagged", "gcp_account_id", "123456789012", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:6", Name: tc.key, Value: tc.value}, infoRuleSet(t))
+
+			if !tc.wantHit {
+				if len(findings) != 0 {
+					t.Fatalf("expected no finding for %s=%q, got %+v", tc.key, tc.value, findings)
+				}
+				return
+			}
+
+			if len(findings) != 1 {
+				t.Fatalf("expected one finding for %s=%q, got %+v", tc.key, tc.value, findings)
+			}
+			f := findings[0]
+			if f.Level != levelInfo {
+				t.Errorf("level = %q, want %q", f.Level, levelInfo)
+			}
+			if f.Reason != "info:gcp-billing-account-id" {
+				t.Errorf("reason = %q, want info:gcp-billing-account-id", f.Reason)
+			}
+		})
+	}
+}
+
+func TestDetectAWSAccountIDInfo(t *testing.T) {
+	const acct = "123456789012"
+
+	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantHit bool
+	}{
+		{"snake case", "aws_account_id", acct, true},
+		{"camel case", "awsAccountId", acct, true},
+		{"kebab case", "aws-account-id", acct, true},
+		{"no id suffix", "aws_account", acct, true},
+		{"generic account_id not flagged", "account_id", acct, false},
+		{"non-aws account key not flagged", "gcp_account_id", acct, false},
+		{"non-12-digit value not flagged", "aws_account_id", "12345", false},
+		{"13-digit value not flagged", "aws_account_id", "1234567890123", false},
+		{"digits with suffix not flagged", "aws_account_id", acct + "x", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:4", Name: tc.key, Value: tc.value}, infoRuleSet(t))
+
+			if !tc.wantHit {
+				if len(findings) != 0 {
+					t.Fatalf("expected no finding for %s=%q, got %+v", tc.key, tc.value, findings)
+				}
+				return
+			}
+
+			if len(findings) != 1 {
+				t.Fatalf("expected one finding for %s=%q, got %+v", tc.key, tc.value, findings)
+			}
+			f := findings[0]
+			if f.Level != levelInfo {
+				t.Errorf("level = %q, want %q", f.Level, levelInfo)
+			}
+			if f.Reason != "info:aws-account-id" {
+				t.Errorf("reason = %q, want info:aws-account-id", f.Reason)
+			}
+		})
 	}
 }
 

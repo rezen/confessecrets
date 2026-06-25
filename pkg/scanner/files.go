@@ -136,6 +136,11 @@ func CompileConfig(cfg Config) (RuleSet, error) {
 		return RuleSet{}, err
 	}
 
+	infoRules, err := compileInfoRules(cfg.Info)
+	if err != nil {
+		return RuleSet{}, err
+	}
+
 	// Stopwords are a global setting: normalize once and apply the same extra
 	// list to every rule, since isLikelySecretValue checks them per-rule.
 	if stopwords := compileStopwords(cfg.Stopwords); stopwords != nil {
@@ -144,7 +149,7 @@ func CompileConfig(cfg Config) (RuleSet, error) {
 		}
 	}
 
-	return RuleSet{Rules: rules, Detectors: detectors, Filters: filters, Correlations: correlations}, nil
+	return RuleSet{Rules: rules, Detectors: detectors, Filters: filters, Correlations: correlations, InfoRules: infoRules}, nil
 }
 
 // Walk invokes fn for root if it is a file, or for every file beneath it if it

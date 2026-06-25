@@ -420,6 +420,118 @@ func findClientSecret(findings []Finding) Finding {
 	return Finding{}
 }
 
+func TestBuiltinJWTURLCorrelation(t *testing.T) {
+	rules := mustCorrelations(t, nil)
+
+	// A JWT (reason jwt_indicator) folds in the preceding service URL.
+	in := []Finding{
+		finding("auth_url", "name", "line:1"),
+		finding("token", "jwt_indicator", "line:2"),
+	}
+	out := correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "jwt-url") || len(out[0].Correlated) != 1 {
+		t.Fatalf("jwt-url pairing not applied: %+v", out)
+	}
+	if out[0].Correlated[0].Name != "auth_url" {
+		t.Errorf("want auth_url folded into jwt, got %+v", out[0].Correlated)
+	}
+
+	// The pattern-matched form (gitleaks:jwt) also pairs.
+	in = []Finding{
+		finding("BASE_URL", "info:azure-app-service", "line:1"),
+		finding("token", "gitleaks:jwt", "line:2"),
+	}
+	out = correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "jwt-url") {
+		t.Fatalf("gitleaks:jwt did not pair with URL: %+v", out)
+	}
+
+	// A key whose name reads like a JWT also pairs, even when its value was not
+	// classified as a JWT by the detector (reason is a generic name match).
+	in = []Finding{
+		finding("auth_url", "name", "line:1"),
+		finding("jwt_secret", "name", "line:2"),
+	}
+	out = correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "jwt-url") {
+		t.Fatalf("name-based jwt did not pair with URL: %+v", out)
+	}
+}
+
+func TestBuiltinClientIDURLCorrelation(t *testing.T) {
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		finding("token_url", "name", "line:1"),
+		finding("client_id", "name", "line:2"),
+	}
+	out := correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "client-id-url") || len(out[0].Correlated) != 1 {
+		t.Fatalf("client-id-url pairing not applied: %+v", out)
+	}
+	if out[0].Correlated[0].Name != "token_url" {
+		t.Errorf("want token_url folded into client_id, got %+v", out[0].Correlated)
+	}
+}
+
+func TestClientIDURLStillFoldsIntoClientSecret(t *testing.T) {
+	// A URL preceding a client_id/client_secret pair is grabbed by client-id-url,
+	// but the client_id remains available to oauth-client-credentials (tagged, not
+	// removed) so the canonical secret pairing still wins the client_secret.
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		finding("token_url", "name", "line:1"),
+		finding("client_id", "name", "line:2"),
+		finding("client_secret", "name", "line:3"),
+	}
+	out := correlateFindings(in, rules)
+
+	secret := findClientSecret(out)
+	if !hasTag(secret.Tags, "oauth-client-credentials") {
+		t.Fatalf("client_secret should still pair with client_id: tags=%v", secret.Tags)
+	}
+	if len(secret.Correlated) != 1 || secret.Correlated[0].Name != "client_id" {
+		t.Errorf("want client_id folded into client_secret, got %+v", secret.Correlated)
+	}
+}
+
+func TestBuiltinPasswordCorrelations(t *testing.T) {
+	rules := mustCorrelations(t, nil)
+
+	// Both a user and a URL present: the richer password-credentials rule wins and
+	// folds both partners.
+	in := []Finding{
+		finding("username", "name", "line:1"),
+		finding("service_url", "name", "line:2"),
+		finding("password", "name", "line:3"),
+	}
+	out := correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "password-credentials") || len(out[0].Correlated) != 2 {
+		t.Fatalf("password-credentials pairing not applied: %+v", out)
+	}
+
+	// Only a user present: falls back to password-user.
+	in = []Finding{
+		finding("db_user", "name", "line:1"),
+		finding("password", "name", "line:2"),
+	}
+	out = correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "password-user") || len(out[0].Correlated) != 1 {
+		t.Fatalf("password-user fallback not applied: %+v", out)
+	}
+
+	// Only a URL present: falls back to password-url.
+	in = []Finding{
+		finding("api_url", "name", "line:1"),
+		finding("passwd", "name", "line:2"),
+	}
+	out = correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "password-url") || len(out[0].Correlated) != 1 {
+		t.Fatalf("password-url fallback not applied: %+v", out)
+	}
+}
+
 func TestCompileFindingMatcherExprRegexConflict(t *testing.T) {
 	_, err := CompileCorrelations([]CorrelationConfig{{
 		ID:       "r",

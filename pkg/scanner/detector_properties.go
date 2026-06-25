@@ -52,6 +52,7 @@ func parseProperties(data []byte) (map[string]any, error) {
 // \uXXXX, ...) are decoded before matching.
 func detectPropertiesLines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 	lines := strings.Split(string(data), "\n")
 
 	for i := 0; i < len(lines); i++ {
@@ -87,12 +88,12 @@ func detectPropertiesLines(file string, data []byte, set RuleSet) []Finding {
 				continue
 			}
 
-			if shouldSkipValue(value, rule) {
+			if shouldSkipValue(value, rule, lang) {
 				continue
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(key, value, rule) {
+			if reason == "" && !isLikelySecretValue(key, value, rule, lang) {
 				continue
 			}
 			if reason == "" {

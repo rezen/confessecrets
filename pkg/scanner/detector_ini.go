@@ -52,6 +52,7 @@ func parseINI(data []byte) (map[string]any, error) {
 // first '=' or ':'. Surrounding quotes on a value are stripped.
 func detectINILines(file string, data []byte, set RuleSet) []Finding {
 	var findings []Finding
+	lang := languageName(file)
 	lines := strings.Split(string(data), "\n")
 	section := ""
 
@@ -79,12 +80,12 @@ func detectINILines(file string, data []byte, set RuleSet) []Finding {
 				continue
 			}
 
-			if shouldSkipValue(value, rule) {
+			if shouldSkipValue(value, rule, lang) {
 				continue
 			}
 
 			reason := classifySecretReason(value)
-			if reason == "" && !isLikelySecretValue(key, value, rule) {
+			if reason == "" && !isLikelySecretValue(key, value, rule, lang) {
 				continue
 			}
 			if reason == "" {
