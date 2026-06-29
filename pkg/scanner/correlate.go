@@ -114,6 +114,16 @@ var builtinCorrelations = []CorrelationConfig{
 		Partners: []FindingMatcher{{NameRegex: `(?i)api[_-]?key`}},
 	},
 	{
+		// An API key (e.g. an x-api-key header) paired with the service or
+		// token-endpoint URL it authenticates against. Same URL partner test as
+		// client-secret-url. Listed after api-key-secret so an api_key claimed as
+		// that pairing's partner is unaffected; this only adds the URL context when
+		// no api_secret pairs with it (first matching rule wins per primary).
+		ID:       "api-key-url",
+		Match:    FindingMatcher{NameRegex: `(?i)x-api-key|api[_-]?key`},
+		Partners: []FindingMatcher{{Expr: urlPartnerExpr}},
+	},
+	{
 		// A cloud function/handler paired with the service URL it is exposed at
 		// (e.g. an Azure Functions or AWS Lambda function next to its endpoint URL).
 		// Names are lower-cased before the substring test so an upper-case

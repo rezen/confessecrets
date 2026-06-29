@@ -474,6 +474,22 @@ func TestBuiltinClientIDURLCorrelation(t *testing.T) {
 	}
 }
 
+func TestBuiltinAPIKeyURLCorrelation(t *testing.T) {
+	rules := mustCorrelations(t, nil)
+
+	in := []Finding{
+		finding("token_url", "name", "line:1"),
+		finding("x-api-key", "name", "line:2"),
+	}
+	out := correlateFindings(in, rules)
+	if len(out) != 1 || !hasTag(out[0].Tags, "api-key-url") || len(out[0].Correlated) != 1 {
+		t.Fatalf("api-key-url pairing not applied: %+v", out)
+	}
+	if out[0].Correlated[0].Name != "token_url" {
+		t.Errorf("want token_url folded into x-api-key, got %+v", out[0].Correlated)
+	}
+}
+
 func TestClientIDURLStillFoldsIntoClientSecret(t *testing.T) {
 	// A URL preceding a client_id/client_secret pair is grabbed by client-id-url,
 	// but the client_id remains available to oauth-client-credentials (tagged, not

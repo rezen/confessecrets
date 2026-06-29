@@ -31,6 +31,10 @@ const (
 	reasonURLCredentials            = "url_credentials"
 	reasonPrivateKeyIndicator       = "private_key_indicator"
 	reasonConnectionStringIndicator = "connection_string_secret_indicator"
+	// reasonNameIndicatesSecret is the shared token for every name-driven finding
+	// (a secret-looking key/name paired with a populated value). Kept short so the
+	// reason field stays a compact token like the value-shape reasons above.
+	reasonNameIndicatesSecret = "name_indicates_secret"
 )
 
 var secretQueryParamRe = regexp.MustCompile(
