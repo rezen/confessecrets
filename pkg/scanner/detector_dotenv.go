@@ -21,7 +21,31 @@ func (DotenvDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 		return detectEnvLines(file, data, set)
 	}
 
-	return detectStructured(file, root, set)
+	return detectStructured(file, root, dotenvLineIndex(data), set)
+}
+
+// dotenvLineIndex maps each variable's structured path ("$.<key>") to the 1-based
+// source line of its assignment, so detectStructured can order and annotate
+// findings by line.
+func dotenvLineIndex(data []byte) map[string]int {
+	index := map[string]int{}
+	lines := strings.Split(string(data), "\n")
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		m := envKeyValueRe.FindStringSubmatch(line)
+		if len(m) != 3 {
+			continue
+		}
+
+		index[joinPath("$", strings.TrimSpace(m[1]))] = i + 1
+	}
+
+	return index
 }
 
 // parseDotenv loads dotenv bytes into a flat map for detectStructured. godotenv

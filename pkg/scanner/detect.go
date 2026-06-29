@@ -76,7 +76,14 @@ func detectorFor(path string) Detector {
 	return nil
 }
 
-func detectStructured(file string, root any, set RuleSet) []Finding {
+// detectStructured walks a parsed structured document (JSON/YAML/INI/properties/
+// dotenv) and returns its findings ordered by source line. lines maps a value's
+// JSON-path ("$.a.b", "$.a[0]") to its 1-based source line; it may be nil when a
+// format can't supply positions, in which case findings fall back to a stable
+// path order. The walk visits keys in line order too, so the prev-finding window
+// that drives value correlation reflects document proximity rather than Go's
+// randomized map iteration.
+func detectStructured(file string, root any, lines map[string]int, set RuleSet) []Finding {
 	var findings []Finding
 	lang := languageName(file)
 
@@ -85,13 +92,11 @@ func detectStructured(file string, root any, set RuleSet) []Finding {
 		switch v := node.(type) {
 		case map[string]any:
 			for _, rule := range set.Rules {
-				findings = append(findings, detectInObject(file, v, path, rule, lang)...)
-				findings = append(findings, detectMapKeyValues(file, v, path, rule, lang)...)
+				findings = append(findings, detectInObject(file, v, path, rule, lang, lines)...)
+				findings = append(findings, detectMapKeyValues(file, v, path, rule, lang, lines)...)
 			}
 
-			// Iterate keys in sorted order so findings are emitted
-			// deterministically; Go randomizes map iteration order.
-			for _, key := range sortedKeys(v) {
+			for _, key := range orderedKeys(v, path, lines) {
 				walkNode(v[key], joinPath(path, key))
 			}
 
@@ -103,15 +108,68 @@ func detectStructured(file string, root any, set RuleSet) []Finding {
 		case string:
 			// Value scanning: flag any scalar whose shape matches a known
 			// secret token, regardless of its key name.
-			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: lastSegment(path), Value: v, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
+			vf := detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: lastSegment(path), Value: v, PrevFindings: recentFindings(findings, set.prevWindow())}, set)
+			if ln := lines[path]; ln > 0 {
+				for i := range vf {
+					vf[i].Line = ln
+				}
+			}
+			findings = append(findings, vf...)
 		}
 	}
 
 	walkNode(root, "$")
+	sortFindingsByLine(findings)
 	return findings
 }
 
-func detectInObject(file string, obj map[string]any, basePath string, rule Rule, lang string) []Finding {
+// orderedKeys returns m's keys ordered by the source line of each child (from
+// lines), falling back to the key name when a line is unknown. This replaces
+// Go's randomized map iteration with a deterministic, document-order traversal.
+func orderedKeys(m map[string]any, basePath string, lines map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		li, lj := lines[joinPath(basePath, keys[i])], lines[joinPath(basePath, keys[j])]
+		if li != lj {
+			if li == 0 {
+				return false
+			}
+			if lj == 0 {
+				return true
+			}
+			return li < lj
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+// sortFindingsByLine orders findings by source line so output is deterministic
+// and reads top-to-bottom. Path then value hash break ties (e.g. two findings on
+// one line); findings whose line is unknown (0) sort last but still stably.
+func sortFindingsByLine(findings []Finding) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		a, b := findings[i], findings[j]
+		if a.Line != b.Line {
+			if a.Line == 0 {
+				return false
+			}
+			if b.Line == 0 {
+				return true
+			}
+			return a.Line < b.Line
+		}
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.ValueSHA256 < b.ValueSHA256
+	})
+}
+
+func detectInObject(file string, obj map[string]any, basePath string, rule Rule, lang string, lines map[string]int) []Finding {
 	var findings []Finding
 
 	for _, namePath := range rule.NamePaths {
@@ -138,7 +196,7 @@ func detectInObject(file string, obj map[string]any, basePath string, rule Rule,
 				reason = "name field indicates secret and paired value is populated"
 			}
 
-			findings = append(findings, newFinding(
+			f := newFinding(
 				file,
 				basePath,
 				namePath,
@@ -146,28 +204,21 @@ func detectInObject(file string, obj map[string]any, basePath string, rule Rule,
 				name,
 				value,
 				reason,
-			))
+			)
+			if ln := lines[joinPath(basePath, valuePath)]; ln > 0 {
+				f.Line = ln
+			}
+			findings = append(findings, f)
 		}
 	}
 
 	return findings
 }
 
-// sortedKeys returns m's keys in lexical order, giving callers a stable
-// iteration sequence in place of Go's randomized map ranging.
-func sortedKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func detectMapKeyValues(file string, obj map[string]any, basePath string, rule Rule, lang string) []Finding {
+func detectMapKeyValues(file string, obj map[string]any, basePath string, rule Rule, lang string, lines map[string]int) []Finding {
 	var findings []Finding
 
-	for _, key := range sortedKeys(obj) {
+	for _, key := range orderedKeys(obj, basePath, lines) {
 		value, ok := obj[key].(string)
 		if !ok {
 			continue
@@ -189,7 +240,7 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 			reason = "map key indicates secret and scalar value is populated"
 		}
 
-		findings = append(findings, newFinding(
+		f := newFinding(
 			file,
 			joinPath(basePath, key),
 			"map_key",
@@ -197,7 +248,11 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 			key,
 			value,
 			reason,
-		))
+		)
+		if ln := lines[joinPath(basePath, key)]; ln > 0 {
+			f.Line = ln
+		}
+		findings = append(findings, f)
 	}
 
 	return findings
@@ -962,4 +1017,19 @@ func joinPath(base, key string) string {
 		return key
 	}
 	return base + "." + key
+}
+
+// newLineMapper returns a function that maps a byte offset into data to its
+// 1-based source line, used by the streaming detectors (JSON, XML) to recover
+// line numbers from decoder offsets.
+func newLineMapper(data []byte) func(offset int64) int {
+	var newlines []int64
+	for i, b := range data {
+		if b == '\n' {
+			newlines = append(newlines, int64(i))
+		}
+	}
+	return func(offset int64) int {
+		return sort.Search(len(newlines), func(i int) bool { return newlines[i] >= offset }) + 1
+	}
 }

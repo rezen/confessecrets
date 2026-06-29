@@ -50,6 +50,135 @@ func keySet(findings []Finding) map[string]string {
 	return out
 }
 
+// TestStructuredLineNumbers verifies the structured detectors (JSON/YAML/INI/
+// properties/dotenv) attach the correct source line to each finding, emit
+// findings in ascending line order, and do so deterministically. Go randomizes
+// map iteration, so without a line index the output order — and, via the
+// prev-finding window, the result set — would vary run to run.
+func TestStructuredLineNumbers(t *testing.T) {
+	rules := testRules(t)
+
+	cases := []struct {
+		name    string
+		file    string
+		det     Detector
+		content string
+		want    map[string]int // finding name -> expected 1-based line
+	}{
+		{
+			name: "json",
+			file: "config.json",
+			det:  JSONDetector{},
+			content: strings.Join([]string{
+				`{`,
+				`  "service": {`,
+				`    "password": "8Fh2kLmQ9zXc4Tg",`,
+				`    "deep": {`,
+				`      "token": "Zq7Wp2Rt5Yx8Bn1"`,
+				`    }`,
+				`  },`,
+				`  "api_key": "Vc3Mn6Bd9Qw2Er5T"`,
+				`}`,
+			}, "\n"),
+			want: map[string]int{"password": 3, "token": 5, "api_key": 8},
+		},
+		{
+			name: "yaml",
+			file: "values.yaml",
+			det:  YAMLDetector{},
+			content: strings.Join([]string{
+				`service:`,
+				`  password: 8Fh2kLmQ9zXc4Tg`,
+				`  deep:`,
+				`    token: Zq7Wp2Rt5Yx8Bn1`,
+				`api_key: Vc3Mn6Bd9Qw2Er5T`,
+			}, "\n"),
+			want: map[string]int{"password": 2, "token": 4, "api_key": 5},
+		},
+		{
+			name: "ini",
+			file: "app.ini",
+			det:  INIDetector{},
+			content: strings.Join([]string{
+				`[db]`,
+				`password = 8Fh2kLmQ9zXc4Tg`,
+				`[api]`,
+				`token = Zq7Wp2Rt5Yx8Bn1`,
+			}, "\n"),
+			want: map[string]int{"password": 2, "token": 4},
+		},
+		{
+			name: "properties",
+			file: "app.properties",
+			det:  PropertiesDetector{},
+			content: strings.Join([]string{
+				`service.password=8Fh2kLmQ9zXc4Tg`,
+				`service.token=Zq7Wp2Rt5Yx8Bn1`,
+			}, "\n"),
+			want: map[string]int{"service.password": 1, "service.token": 2},
+		},
+		{
+			name: "dotenv",
+			file: "app.env",
+			det:  DotenvDetector{},
+			content: strings.Join([]string{
+				`PASSWORD=8Fh2kLmQ9zXc4Tg`,
+				`API_TOKEN=Zq7Wp2Rt5Yx8Bn1`,
+			}, "\n"),
+			want: map[string]int{"PASSWORD": 1, "API_TOKEN": 2},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set := RuleSet{Rules: rules}
+
+			var firstOrder string
+			for run := 0; run < 5; run++ {
+				findings := tc.det.Detect(tc.file, []byte(tc.content), set)
+
+				names := make([]string, 0, len(findings))
+				lastLine := 0
+				for _, f := range findings {
+					names = append(names, f.Name)
+
+					if f.Line < lastLine {
+						t.Fatalf("findings out of line order: %q line %d after line %d", f.Name, f.Line, lastLine)
+					}
+					lastLine = f.Line
+
+					if want, ok := tc.want[f.Name]; ok && f.Line != want {
+						t.Errorf("%q line = %d, want %d", f.Name, f.Line, want)
+					}
+				}
+
+				for name := range tc.want {
+					if !containsName(findings, name) {
+						t.Errorf("missing expected finding %q", name)
+					}
+				}
+
+				order := strings.Join(names, ",")
+				if run == 0 {
+					firstOrder = order
+				} else if order != firstOrder {
+					t.Fatalf("nondeterministic order on run %d: %q != %q", run, order, firstOrder)
+				}
+			}
+		})
+	}
+}
+
+// containsName reports whether any finding has the given name.
+func containsName(findings []Finding, name string) bool {
+	for _, f := range findings {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDetectorFor(t *testing.T) {
 	tests := []struct {
 		path string

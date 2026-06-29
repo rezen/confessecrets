@@ -21,8 +21,11 @@ func detectXML(file string, data []byte, set RuleSet) []Finding {
 	dec.AutoClose = xml.HTMLAutoClose
 	dec.Entity = xml.HTMLEntity
 
+	lineAt := newLineMapper(data)
+
 	type frame struct {
 		name string
+		line int
 		text strings.Builder
 	}
 
@@ -45,13 +48,17 @@ func detectXML(file string, data []byte, set RuleSet) []Finding {
 
 		switch t := tok.(type) {
 		case xml.StartElement:
-			stack = append(stack, &frame{name: t.Name.Local})
+			line := lineAt(dec.InputOffset())
+			stack = append(stack, &frame{name: t.Name.Local, line: line})
+
+			before := len(findings)
 			findings = append(findings, detectXMLAttrs(file, pathOf(), t.Attr, set.Rules)...)
 			findings = append(findings, detectXMLAttrReasons(file, pathOf(), t.Attr, set.Rules)...)
 
 			for _, attr := range t.Attr {
 				findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: pathOf(), Name: attr.Name.Local, Value: attr.Value, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
 			}
+			stampLine(findings[before:], line)
 
 		case xml.CharData:
 			if len(stack) > 0 {
@@ -72,13 +79,27 @@ func detectXML(file string, data []byte, set RuleSet) []Finding {
 				continue
 			}
 
+			before := len(findings)
 			findings = append(findings, detectXMLElementText(file, path, f.name, text, set.Rules)...)
 			findings = append(findings, detectXMLTextReason(file, path, f.name, text, set.Rules)...)
 			findings = append(findings, detectValuePatterns(ExaminationFocus{File: file, Path: path, Name: f.name, Value: text, PrevFindings: recentFindings(findings, set.prevWindow())}, set)...)
+			stampLine(findings[before:], f.line)
 		}
 	}
 
+	sortFindingsByLine(findings)
 	return findings
+}
+
+// stampLine sets the source line on a batch of just-produced findings whose line
+// is known from the streaming decoder rather than from their path.
+func stampLine(findings []Finding, line int) {
+	if line <= 0 {
+		return
+	}
+	for i := range findings {
+		findings[i].Line = line
+	}
 }
 
 func detectXMLElementText(file, path, elem, text string, rules []Rule) []Finding {

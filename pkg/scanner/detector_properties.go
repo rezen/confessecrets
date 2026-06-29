@@ -19,7 +19,44 @@ func (PropertiesDetector) Detect(file string, data []byte, set RuleSet) []Findin
 		return detectPropertiesLines(file, data, set)
 	}
 
-	return detectStructured(file, root, set)
+	return detectStructured(file, root, propertiesLineIndex(data), set)
+}
+
+// propertiesLineIndex maps each property key's structured path ("$.<key>") to the
+// 1-based source line it is defined on, so detectStructured can order and
+// annotate findings by line. It mirrors detectPropertiesLines' logical-line
+// handling (comments, '\'-continued lines) but records only key positions.
+func propertiesLineIndex(data []byte) map[string]int {
+	index := map[string]int{}
+	lines := strings.Split(string(data), "\n")
+
+	for i := 0; i < len(lines); i++ {
+		stripped := trimPropertiesLeading(strings.TrimRight(lines[i], "\r"))
+
+		if stripped == "" || stripped[0] == '#' || stripped[0] == '!' {
+			continue
+		}
+
+		startLine := i
+		logical := stripped
+		for propertyLineContinues(logical) {
+			logical = logical[:len(logical)-1]
+			i++
+			if i >= len(lines) {
+				break
+			}
+			logical += trimPropertiesLeading(strings.TrimRight(lines[i], "\r"))
+		}
+
+		rawKey, _, ok := splitProperty(logical)
+		if !ok {
+			continue
+		}
+
+		index[joinPath("$", unescapeProperty(rawKey))] = startLine + 1
+	}
+
+	return index
 }
 
 // parseProperties loads .properties bytes into a flat map for detectStructured.

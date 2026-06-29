@@ -18,7 +18,44 @@ func (INIDetector) Detect(file string, data []byte, set RuleSet) []Finding {
 		return detectINILines(file, data, set)
 	}
 
-	return detectStructured(file, root, set)
+	return detectStructured(file, root, iniLineIndex(data), set)
+}
+
+// iniLineIndex maps each entry's structured path to its 1-based source line,
+// matching parseINI's nesting: default-section keys sit at "$.<key>" and a named
+// section's keys at "$.<section>.<key>" (the section header itself is recorded so
+// nested objects also order by line).
+func iniLineIndex(data []byte) map[string]int {
+	index := map[string]int{}
+	lines := strings.Split(string(data), "\n")
+	section := ""
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
+
+		if trimmed == "" || trimmed[0] == ';' || trimmed[0] == '#' {
+			continue
+		}
+
+		if trimmed[0] == '[' && strings.HasSuffix(trimmed, "]") {
+			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			index[joinPath("$", section)] = i + 1
+			continue
+		}
+
+		key, _, ok := splitINIPair(trimmed)
+		if !ok {
+			continue
+		}
+
+		base := "$"
+		if section != "" {
+			base = joinPath("$", section)
+		}
+		index[joinPath(base, key)] = i + 1
+	}
+
+	return index
 }
 
 // parseINI loads INI bytes into a nested map: the default section's keys sit at
