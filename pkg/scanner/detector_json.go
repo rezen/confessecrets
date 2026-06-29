@@ -111,7 +111,7 @@ func detectJSONLines(file string, data []byte, set RuleSet) []Finding {
 					continue
 				}
 				if reason == "" {
-					reason = "JSON-like key indicates secret and scalar value is populated"
+					reason = reasonNameIndicatesSecret
 				}
 
 				findings = append(findings, newFinding(

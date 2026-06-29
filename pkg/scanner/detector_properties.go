@@ -134,7 +134,7 @@ func detectPropertiesLines(file string, data []byte, set RuleSet) []Finding {
 				continue
 			}
 			if reason == "" {
-				reason = "properties key indicates secret and value is populated"
+				reason = reasonNameIndicatesSecret
 			}
 
 			findings = append(findings, newFinding(

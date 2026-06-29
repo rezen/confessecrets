@@ -35,7 +35,34 @@ const (
 	// (a secret-looking key/name paired with a populated value). Kept short so the
 	// reason field stays a compact token like the value-shape reasons above.
 	reasonNameIndicatesSecret = "name_indicates_secret"
+	// reasonEnvFallbackLiteral marks a source-code env-var lookup whose hardcoded
+	// default/fallback value is a string literal (e.g. os.getenv("API_KEY",
+	// "literal") or `getenv("X") or "literal"`) — a distinct signal from a plain
+	// secret-named assignment.
+	reasonEnvFallbackLiteral = "env_fallback_literal"
 )
+
+// Reason prefixes for findings whose reason carries a dynamic suffix: the matched
+// gitleaks rule id, custom detector name, recognized service id, or measured
+// entropy. Pair each with its constructor below rather than concatenating inline,
+// so the reason vocabulary stays in one place.
+const (
+	reasonPrefixGitleaks    = "gitleaks:"
+	reasonPrefixCustom      = "custom:"
+	reasonPrefixInfo        = "info:"
+	reasonPrefixHighEntropy = "high_entropy:"
+)
+
+// gitleaksReason / customReason / infoReason build a reason from its prefix and
+// the matched id, detector name, or service id.
+func gitleaksReason(ruleID string) string   { return reasonPrefixGitleaks + ruleID }
+func customReason(detector string) string   { return reasonPrefixCustom + detector }
+func infoReason(id string) string           { return reasonPrefixInfo + id }
+
+// highEntropyReason embeds the measured Shannon entropy (e.g. "high_entropy:4.73").
+func highEntropyReason(entropy float64) string {
+	return fmt.Sprintf(reasonPrefixHighEntropy+"%.2f", entropy)
+}
 
 var secretQueryParamRe = regexp.MustCompile(
 	`(?i)(token|access[_-]?token|refresh[_-]?token|api[_-]?key|apikey|secret|sig|signature|credential|password|passwd|pwd)`,
@@ -197,7 +224,7 @@ func detectInObject(file string, obj map[string]any, basePath string, rule Rule,
 				continue
 			}
 			if reason == "" {
-				reason = "name field indicates secret and paired value is populated"
+				reason = reasonNameIndicatesSecret
 			}
 
 			f := newFinding(
@@ -241,7 +268,7 @@ func detectMapKeyValues(file string, obj map[string]any, basePath string, rule R
 			continue
 		}
 		if reason == "" {
-			reason = "map key indicates secret and scalar value is populated"
+			reason = reasonNameIndicatesSecret
 		}
 
 		f := newFinding(

@@ -126,7 +126,7 @@ func detectINILines(file string, data []byte, set RuleSet) []Finding {
 				continue
 			}
 			if reason == "" {
-				reason = "ini key indicates secret and value is populated"
+				reason = reasonNameIndicatesSecret
 			}
 
 			findings = append(findings, newFinding(

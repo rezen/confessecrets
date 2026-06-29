@@ -148,8 +148,8 @@ points to a genuine opaque secret. Set the rule's `max_name_value_similarity` to
 drop name-driven findings at or above a chosen similarity (`0` disables it).
 
 The `reason` field explains why it was flagged — e.g. `jwt_indicator`,
-`url_credentials`, `private_key_indicator`, a name-driven message, or
-`gitleaks:<rule-id>` for a value-pattern match. Findings can also carry an
+`url_credentials`, `private_key_indicator`, `name_indicates_secret` for a
+name-driven finding, or `gitleaks:<rule-id>` for a value-pattern match. Findings can also carry an
 optional `meta` object with value-derived context:
 
 - `jwt` — for JSON Web Token values: the decoded `header`, the parsed claims

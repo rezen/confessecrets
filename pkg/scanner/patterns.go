@@ -1,7 +1,6 @@
 package scanner
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -231,7 +230,7 @@ func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 			"value_pattern",
 			focus.Name,
 			value,
-			"gitleaks:"+id,
+			gitleaksReason(id),
 		)}
 	}
 
@@ -244,7 +243,7 @@ func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 				"value_pattern",
 				focus.Name,
 				value,
-				"custom:"+d.Name,
+				customReason(d.Name),
 			)}
 		}
 	}
@@ -281,7 +280,7 @@ func infoFinding(focus ExaminationFocus, value, id string) Finding {
 		"value_pattern",
 		focus.Name,
 		value,
-		"info:"+id,
+		infoReason(id),
 	)
 	f.Level = levelInfo
 	return f
@@ -324,7 +323,7 @@ func matchHighEntropy(value string, rules []Rule) string {
 		}
 
 		if e := shannonEntropy(value); e >= rule.HighEntropyThreshold {
-			return fmt.Sprintf("high_entropy:%.2f", e)
+			return highEntropyReason(e)
 		}
 	}
 

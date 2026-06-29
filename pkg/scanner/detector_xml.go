@@ -120,7 +120,7 @@ func detectXMLElementText(file, path, elem, text string, rules []Rule) []Finding
 			continue
 		}
 		if reason == "" {
-			reason = "XML element name indicates secret and text content is populated"
+			reason = reasonNameIndicatesSecret
 		}
 
 		findings = append(findings, newFinding(
@@ -248,7 +248,7 @@ func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding
 				continue
 			}
 			if reason == "" {
-				reason = "XML attribute name indicates secret and value is populated"
+				reason = reasonNameIndicatesSecret
 			}
 
 			findings = append(findings, newFinding(
@@ -285,7 +285,7 @@ func detectXMLAttrs(file, path string, attrs []xml.Attr, rules []Rule) []Finding
 					continue
 				}
 				if reason == "" {
-					reason = "XML name attribute indicates secret and paired value attribute is populated"
+					reason = reasonNameIndicatesSecret
 				}
 
 				findings = append(findings, newFinding(

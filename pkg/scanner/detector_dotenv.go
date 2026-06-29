@@ -100,7 +100,7 @@ func detectEnvLines(file string, data []byte, set RuleSet) []Finding {
 				continue
 			}
 			if reason == "" {
-				reason = "env key indicates secret and scalar value is populated"
+				reason = reasonNameIndicatesSecret
 			}
 
 			findings = append(findings, newFinding(

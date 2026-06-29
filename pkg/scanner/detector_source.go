@@ -525,7 +525,7 @@ func (l *loadedLang) detectNamed(file string, data []byte, tree *ts.Tree, lines 
 				continue
 			}
 			if reason == "" {
-				reason = "source assignment name indicates secret and value is a string literal"
+				reason = reasonNameIndicatesSecret
 			}
 
 			findings = append(findings, newFinding(
@@ -656,7 +656,7 @@ func (l *loadedLang) detectEnvFallback(file string, data []byte, tree *ts.Tree, 
 				continue
 			}
 			if reason == "" {
-				reason = "env lookup key indicates secret and fallback value is a string literal"
+				reason = reasonEnvFallbackLiteral
 			}
 
 			findings = append(findings, newFinding(
@@ -729,7 +729,7 @@ func (l *loadedLang) detectCallArgSecret(file string, data []byte, tree *ts.Tree
 
 			reason := classifySecretReason(value)
 			if reason == "" {
-				reason = "secret-named assignment passes a string literal into a call"
+				reason = reasonNameIndicatesSecret
 			}
 
 			findings = append(findings, newFinding(
@@ -801,7 +801,7 @@ func (l *loadedLang) detectLogicalDefault(file string, data []byte, tree *ts.Tre
 
 			reason := classifySecretReason(val)
 			if reason == "" {
-				reason = "env default value (logical fallback) is a hardcoded string literal"
+				reason = reasonEnvFallbackLiteral
 			}
 
 			findings = append(findings, newFinding(

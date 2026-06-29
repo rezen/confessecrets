@@ -405,7 +405,7 @@ func enrichMetaFromPartner(primary *Finding, partner Finding) {
 		dst, src = &primaryMeta(primary).Username, partner.RawValue
 	case strings.Contains(leaf, "url"), strings.Contains(leaf, "uri"),
 		strings.Contains(leaf, "endpoint"),
-		strings.HasPrefix(partner.Reason, "info:"), strings.Contains(partner.Reason, "url"):
+		strings.HasPrefix(partner.Reason, reasonPrefixInfo), strings.Contains(partner.Reason, "url"):
 		dst, src = &primaryMeta(primary).URL, partner.RawValue
 	default:
 		return
