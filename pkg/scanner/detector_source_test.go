@@ -98,6 +98,77 @@ const mode = process.env.API_KEY == "shouldnotflagcompare";`,
 	}
 }
 
+// TestSourceComments verifies that high-confidence, self-identifying tokens are
+// flagged even when they live on a comment line — the case the AST passes miss,
+// since a comment is not a string literal. It also pins the low-noise contract:
+// ordinary prose comments and commented-out secret-named assignments whose value
+// only has a secret *name* (no token shape) must not fire.
+func TestSourceComments(t *testing.T) {
+	rules := testRules(t)
+
+	const awsToken = "AKIAIOSFODNN7EXAMPLE" // gitleaks aws-access-token shape
+
+	cases := []struct {
+		name       string
+		ext        string
+		code       string
+		wantFlag   []string
+		wantAbsent []string
+	}{
+		{
+			name:       "python-line-comment",
+			ext:        ".py",
+			code:       "# old key, rotate me: " + awsToken + "\nx = 1",
+			wantFlag:   []string{awsToken},
+			wantAbsent: []string{},
+		},
+		{
+			name:       "js-line-and-block-comment",
+			ext:        ".js",
+			code:       "// dead config: ghp_012345678901234567890123456789abcdef\n/* token = AKIAIOSFODNN7EXAMPLE */",
+			wantFlag:   []string{"ghp_012345678901234567890123456789abcdef", awsToken},
+			wantAbsent: []string{},
+		},
+		{
+			name:       "go-comment",
+			ext:        ".go",
+			code:       "package main\n// AKIAIOSFODNN7EXAMPLE was the prod key\nvar x = 1",
+			wantFlag:   []string{awsToken},
+			wantAbsent: []string{},
+		},
+		{
+			name:       "prose-and-name-only-not-flagged",
+			ext:        ".py",
+			code:       "# TODO: set the real password here later\n# api_key = your-api-key-goes-here\nx = 1",
+			wantFlag:   []string{},
+			wantAbsent: []string{"your-api-key-goes-here"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := sourceLangForExt(tc.ext)
+			if spec == nil || defaultSourceEngine.langFor(spec) == nil {
+				t.Fatalf("source language for %s unavailable", tc.ext)
+			}
+
+			findings := SourceDetector{}.Detect("sample"+tc.ext, []byte(tc.code), RuleSet{Rules: rules})
+			got := rawValueSet(findings)
+
+			for _, want := range tc.wantFlag {
+				if !got[want] {
+					t.Errorf("expected %q to be flagged, but it was not.\nfindings: %s", want, debugFindings(findings))
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if got[absent] {
+					t.Errorf("value %q should NOT be flagged, but it was.\nfindings: %s", absent, debugFindings(findings))
+				}
+			}
+		})
+	}
+}
+
 // TestSourceDetector exercises the tree-sitter source scanner across every
 // supported language. The defining behavior under test: a secret-named
 // assignment to a *string literal* is flagged, but the same name assigned from a

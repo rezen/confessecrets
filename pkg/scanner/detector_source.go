@@ -478,6 +478,7 @@ func (l *loadedLang) detect(file string, data []byte, set RuleSet) []Finding {
 	findings = append(findings, l.detectEnvFallback(file, data, tree, lines, set.Rules)...)
 	findings = append(findings, l.detectCallArgSecret(file, data, tree, lines, set.Rules)...)
 	findings = append(findings, l.detectLogicalDefault(file, data, tree, lines, set.Rules)...)
+	findings = append(findings, l.detectComments(file, data, tree, lines, set)...)
 
 	// The passes above run in pass order, not source order, so a value-shape
 	// finding on an earlier line (e.g. a BASE_URL endpoint) can trail a
@@ -817,6 +818,107 @@ func (l *loadedLang) detectLogicalDefault(file string, data []byte, tree *ts.Tre
 	}
 
 	return findings
+}
+
+// detectComments scans comment text for high-confidence, self-identifying secret
+// tokens (AWS keys, GitHub/Stripe/etc. tokens, JWTs, PEM private keys). Comments
+// parse as comment nodes, not string literals, so the name- and value-driven
+// passes never see them; a key pasted into a commented-out line or an "old token,
+// rotate me" note would otherwise slip through entirely.
+//
+// Only the gitleaks value-shape patterns run here. Name-driven heuristics have no
+// reliable key to anchor on in free prose, and the generic high-entropy detector
+// would fire on ordinary comment text — both are deliberately excluded so this
+// pass stays low-noise. The matched token, not the whole comment, is reported,
+// and its line is resolved from the token's own offset so multi-line block
+// comments attribute correctly.
+func (l *loadedLang) detectComments(file string, data []byte, tree *ts.Tree, lines lineIndex, set RuleSet) []Finding {
+	root := tree.RootNode()
+	if root == nil {
+		return nil
+	}
+
+	var findings []Finding
+	walkComments(root, l.lang, func(n *ts.Node) {
+		base := int(n.StartByte())
+		text := n.Text(data)
+		for _, s := range findCommentSecrets(text) {
+			if valueSuppressed(s.token, set.Rules) {
+				continue
+			}
+			findings = append(findings, newFinding(
+				file,
+				fmt.Sprintf("line:%d", lines.lineAt(base+s.offset)),
+				"comment",
+				"comment",
+				"",
+				s.token,
+				gitleaksReason(s.id),
+			))
+		}
+	})
+	return findings
+}
+
+// commentSecret is a gitleaks token found inside a comment, carrying its byte
+// offset within the comment text so the finding can be attributed to the right
+// line of a multi-line comment.
+type commentSecret struct {
+	id     string
+	token  string
+	offset int
+}
+
+// findCommentSecrets returns every gitleaks value-pattern match in text, in
+// offset order and deduplicated by token (the same secret pasted twice is
+// reported once). Only the high-confidence token patterns are applied — see
+// detectComments for why the name-driven and high-entropy heuristics are not.
+func findCommentSecrets(text string) []commentSecret {
+	var out []commentSecret
+	seen := map[string]bool{}
+
+	scan := func(pats []ValuePattern) {
+		for _, p := range pats {
+			for _, loc := range p.Regex.FindAllStringIndex(text, -1) {
+				token := text[loc[0]:loc[1]]
+				if seen[token] || allowlisted(token, p.Allow) {
+					continue
+				}
+				seen[token] = true
+				out = append(out, commentSecret{id: p.ID, token: token, offset: loc[0]})
+			}
+		}
+	}
+	scan(gitleaksPatterns)
+	scan(gitleaksGeneratedPatterns)
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].offset < out[j].offset })
+	return out
+}
+
+// walkComments invokes fn for every comment node in the tree rooted at n. Grammars
+// name comments variously ("comment", "line_comment", "block_comment",
+// "multiline_comment", ...) and tree-sitter attaches them as "extras" at any
+// depth, so the whole tree is traversed rather than relying on a per-grammar
+// query that would silently disable the pass on an unexpected node name.
+func walkComments(n *ts.Node, lang *ts.Language, fn func(*ts.Node)) {
+	if n == nil {
+		return
+	}
+	if isCommentNodeType(n.Type(lang)) {
+		fn(n)
+		return // comments have no comment children worth descending into
+	}
+	for i := 0; i < n.ChildCount(); i++ {
+		walkComments(n.Child(i), lang, fn)
+	}
+}
+
+// isCommentNodeType reports whether a tree-sitter node type denotes a comment,
+// covering the bare "comment" name and the "_comment"-suffixed variants
+// (line_comment, block_comment, multiline_comment, doc_comment).
+func isCommentNodeType(t string) bool {
+	return t == "comment" || strings.HasSuffix(t, "_comment")
 }
 
 // operatorText returns the text of an expression node's operator field (e.g.

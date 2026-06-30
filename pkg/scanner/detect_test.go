@@ -3,6 +3,7 @@ package scanner
 import (
 	"encoding/base64"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -721,6 +722,10 @@ func TestMatchValuePattern(t *testing.T) {
 		{"npm_abcdefghijklmnopqrstuvwxyz0123456789", "npm-access-token"},
 		{"AIzaabcdefghijklmnopqrstuvwxyz012345678", "gcp-api-key"},
 		{"shpss_0123456789abcdef0123456789abcdef", "shopify-shared-secret"},
+		// Generated (gitleaks.toml-derived) patterns: distinctive vendor prefixes.
+		{"lin_api_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "linear-api-key"},
+		{"hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "huggingface-access-token"},
+		{"glsa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_abcdef12", "grafana-service-account-token"},
 		// Negatives: ordinary values must not match any token pattern.
 		{"hunter2secret", ""},
 		{"just a friendly note here", ""},
@@ -732,6 +737,25 @@ func TestMatchValuePattern(t *testing.T) {
 		if got := matchValuePattern(tt.value); got != tt.want {
 			t.Errorf("matchValuePattern(%q) = %q, want %q", tt.value, got, tt.want)
 		}
+	}
+}
+
+// TestScanValuePatternsAllowlist verifies that a per-rule allowlist (carried
+// from gitleaks.toml) suppresses an otherwise-matching value.
+func TestScanValuePatternsAllowlist(t *testing.T) {
+	pats := []ValuePattern{
+		{
+			ID:    "example-rule",
+			Regex: regexp.MustCompile(`\bAKIA[A-Z0-9]{16}\b`),
+			Allow: []*regexp.Regexp{regexp.MustCompile(`EXAMPLE$`)},
+		},
+	}
+
+	if got := scanValuePatterns("AKIAIOSFODNN7REAL000", pats); got != "example-rule" {
+		t.Errorf("non-allowlisted value: got %q, want %q", got, "example-rule")
+	}
+	if got := scanValuePatterns("AKIAIOSFODNN7EXAMPLE", pats); got != "" {
+		t.Errorf("allowlisted value should be suppressed: got %q, want %q", got, "")
 	}
 }
 

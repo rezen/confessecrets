@@ -25,8 +25,53 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Verify generated patterns are up to date
+        # The gitleaks-derived value patterns are committed (patterns_gitleaks_gen.go).
+        # Regenerate and fail if the result differs from what's checked in, so an edit
+        # to gitleaks.toml or the generator can't silently drift from the committed file.
+        run: |
+          go generate ./pkg/scanner
+          if ! git diff --exit-code -- pkg/scanner/patterns_gitleaks_gen.go; then
+            echo "::error::patterns_gitleaks_gen.go is out of date. Run 'go generate ./pkg/scanner' and commit the result." >&2
+            exit 1
+          fi
+
       - name: Run tests
-        run: go test -race ./...
+        # -short keeps this job fast and hermetic: the network-dependent
+        # external-tool comparison and performance tests run in the dedicated
+        # "performance" job instead.
+        run: go test -race -short ./...
+
+  performance:
+    name: Performance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # No -race here: it instruments timing and would distort the numbers.
+      # -v surfaces the per-scanner timing lines in the raw job log.
+      - name: Run comparison & performance tests
+        run: go test -v -run 'TestExternalCompare|TestExternalPerformance' ./pkg/scanner/
+
+      # Render the generated report as the job's summary so the metrics show up
+      # as a table on the run's page, not just buried in the log.
+      - name: Publish performance report to job summary
+        if: always()
+        run: |
+          if [ -f performance.md ]; then
+            cat performance.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "performance.md not generated (external tools may have been skipped)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     name: Build

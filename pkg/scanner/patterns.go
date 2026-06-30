@@ -1,5 +1,7 @@
 package scanner
 
+//go:generate go run ../../cmd/generate/patterns -in ../../gitleaks.toml -out patterns_gitleaks_gen.go
+
 import (
 	"regexp"
 	"strings"
@@ -10,6 +12,10 @@ import (
 type ValuePattern struct {
 	ID    string
 	Regex *regexp.Regexp
+	// Allow are per-rule allowlist regexes (carried from gitleaks.toml): when the
+	// Regex matches but any Allow regex also matches the value, it is suppressed
+	// (e.g. AWS example keys ending in EXAMPLE). Nil for the hand-curated rules.
+	Allow []*regexp.Regexp
 }
 
 // gitleaksPatterns are high-confidence, self-identifying secret token patterns
@@ -21,38 +27,60 @@ type ValuePattern struct {
 // token shape. Keyword-gated rules that rely on surrounding prose (e.g. heroku,
 // telegram) are intentionally omitted because they would match bare UUIDs here.
 var gitleaksPatterns = []ValuePattern{
-	{"aws-access-token", regexp.MustCompile(`\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b`)},
-	{"github-pat", regexp.MustCompile(`\bghp_[0-9a-zA-Z]{36}\b`)},
-	{"github-fine-grained-pat", regexp.MustCompile(`\bgithub_pat_\w{82}\b`)},
-	{"github-oauth", regexp.MustCompile(`\bgho_[0-9a-zA-Z]{36}\b`)},
-	{"github-app-token", regexp.MustCompile(`\b(?:ghu|ghs)_[0-9a-zA-Z]{36}\b`)},
-	{"gitlab-pat", regexp.MustCompile(`\bglpat-[\w-]{20}\b`)},
-	{"slack-bot-token", regexp.MustCompile(`xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*`)},
-	{"slack-user-token", regexp.MustCompile(`xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}`)},
-	{"stripe-access-token", regexp.MustCompile(`\b(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}\b`)},
-	{"sendgrid-api-token", regexp.MustCompile(`\bSG\.[A-Za-z0-9=_.\-]{66}`)},
-	{"twilio-api-key", regexp.MustCompile(`\bSK[0-9a-fA-F]{32}\b`)},
-	{"npm-access-token", regexp.MustCompile(`\bnpm_[a-zA-Z0-9]{36}\b`)},
-	{"pypi-upload-token", regexp.MustCompile(`pypi-AgEIcHlwaS5vcmc[\w-]{50,1000}`)},
-	{"openai-api-key", regexp.MustCompile(`\b(?:sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})\b`)},
-	{"anthropic-api-key", regexp.MustCompile(`\bsk-ant-api03-[a-zA-Z0-9_\-]{93}AA\b`)},
-	{"gcp-api-key", regexp.MustCompile(`\bAIza[\w-]{35}\b`)},
-	{"jwt", regexp.MustCompile(`\bey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9/\\_-]{17,}\.(?:[a-zA-Z0-9/\\_-]{10,}={0,2})?`)},
-	{"private-key", regexp.MustCompile(`(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----`)},
-	{"square-access-token", regexp.MustCompile(`\b(?:EAAA|sq0atp-)[\w-]{22,60}\b`)},
-	{"shopify-shared-secret", regexp.MustCompile(`\bshpss_[a-fA-F0-9]{32}\b`)},
+	{ID: "aws-access-token", Regex: regexp.MustCompile(`\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b`)},
+	{ID: "github-pat", Regex: regexp.MustCompile(`\bghp_[0-9a-zA-Z]{36}\b`)},
+	{ID: "github-fine-grained-pat", Regex: regexp.MustCompile(`\bgithub_pat_\w{82}\b`)},
+	{ID: "github-oauth", Regex: regexp.MustCompile(`\bgho_[0-9a-zA-Z]{36}\b`)},
+	{ID: "github-app-token", Regex: regexp.MustCompile(`\b(?:ghu|ghs)_[0-9a-zA-Z]{36}\b`)},
+	{ID: "gitlab-pat", Regex: regexp.MustCompile(`\bglpat-[\w-]{20}\b`)},
+	{ID: "slack-bot-token", Regex: regexp.MustCompile(`xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*`)},
+	{ID: "slack-user-token", Regex: regexp.MustCompile(`xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}`)},
+	{ID: "stripe-access-token", Regex: regexp.MustCompile(`\b(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}\b`)},
+	{ID: "sendgrid-api-token", Regex: regexp.MustCompile(`\bSG\.[A-Za-z0-9=_.\-]{66}`)},
+	{ID: "twilio-api-key", Regex: regexp.MustCompile(`\bSK[0-9a-fA-F]{32}\b`)},
+	{ID: "npm-access-token", Regex: regexp.MustCompile(`\bnpm_[a-zA-Z0-9]{36}\b`)},
+	{ID: "pypi-upload-token", Regex: regexp.MustCompile(`pypi-AgEIcHlwaS5vcmc[\w-]{50,1000}`)},
+	{ID: "openai-api-key", Regex: regexp.MustCompile(`\b(?:sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})\b`)},
+	{ID: "anthropic-api-key", Regex: regexp.MustCompile(`\bsk-ant-api03-[a-zA-Z0-9_\-]{93}AA\b`)},
+	{ID: "gcp-api-key", Regex: regexp.MustCompile(`\bAIza[\w-]{35}\b`)},
+	{ID: "jwt", Regex: regexp.MustCompile(`\bey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9/\\_-]{17,}\.(?:[a-zA-Z0-9/\\_-]{10,}={0,2})?`)},
+	{ID: "private-key", Regex: regexp.MustCompile(`(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----`)},
+	{ID: "square-access-token", Regex: regexp.MustCompile(`\b(?:EAAA|sq0atp-)[\w-]{22,60}\b`)},
+	{ID: "shopify-shared-secret", Regex: regexp.MustCompile(`\bshpss_[a-fA-F0-9]{32}\b`)},
 }
 
 // matchValuePattern returns the ID of the first gitleaks pattern whose regex
-// matches value, or "" if none match.
+// matches value, or "" if none match. The hand-curated patterns are consulted
+// first so their tuned forms take precedence over the auto-generated set.
 func matchValuePattern(value string) string {
-	for _, p := range gitleaksPatterns {
-		if p.Regex.MatchString(value) {
+	if id := scanValuePatterns(value, gitleaksPatterns); id != "" {
+		return id
+	}
+	return scanValuePatterns(value, gitleaksGeneratedPatterns)
+}
+
+// scanValuePatterns returns the ID of the first pattern in pats whose regex
+// matches value and whose allowlist (if any) does not, or "" if none match.
+func scanValuePatterns(value string, pats []ValuePattern) string {
+	for _, p := range pats {
+		if p.Regex.MatchString(value) && !allowlisted(value, p.Allow) {
 			return p.ID
 		}
 	}
 
 	return ""
+}
+
+// allowlisted reports whether value matches any of a pattern's allowlist regexes
+// (i.e. is a known false positive such as a vendor example key).
+func allowlisted(value string, allow []*regexp.Regexp) bool {
+	for _, a := range allow {
+		if a.MatchString(value) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // infoURLPatterns recognize service endpoint URLs that are worth surfacing for
@@ -61,103 +89,103 @@ func matchValuePattern(value string) string {
 var infoURLPatterns = []ValuePattern{
 	// ---- AWS ----
 	// Lambda function URLs, e.g. abc123.lambda-url.us-east-1.on.aws
-	{"aws-lambda-url", regexp.MustCompile(`(?i)\b[a-z0-9]+\.lambda-url\.[a-z0-9-]+\.on\.aws\b`)},
+	{ID: "aws-lambda-url", Regex: regexp.MustCompile(`(?i)\b[a-z0-9]+\.lambda-url\.[a-z0-9-]+\.on\.aws\b`)},
 	// API Gateway (REST/HTTP), e.g. a1b2c3d4.execute-api.us-east-1.amazonaws.com
-	{"aws-api-gateway", regexp.MustCompile(`(?i)\b[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com\b`)},
+	{ID: "aws-api-gateway", Regex: regexp.MustCompile(`(?i)\b[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com\b`)},
 	// AppSync GraphQL, e.g. abc.appsync-api.us-east-1.amazonaws.com
-	{"aws-appsync", regexp.MustCompile(`(?i)\b[a-z0-9]+\.appsync-api\.[a-z0-9-]+\.amazonaws\.com\b`)},
+	{ID: "aws-appsync", Regex: regexp.MustCompile(`(?i)\b[a-z0-9]+\.appsync-api\.[a-z0-9-]+\.amazonaws\.com\b`)},
 
 	// ---- Azure ----
 	// App Service / Functions. Covers classic (app.azurewebsites.net),
 	// SCM/Kudu (app.scm.azurewebsites.net), and the newer region-scoped
 	// unique default hostnames (app-<hash>.<region>.azurewebsites.net and
 	// app-<hash>.scm.<region>.azurewebsites.net).
-	{"azure-app-service", regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.scm)?(?:\.[a-z0-9]+)?\.azurewebsites\.net\b`)},
+	{ID: "azure-app-service", Regex: regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.scm)?(?:\.[a-z0-9]+)?\.azurewebsites\.net\b`)},
 	// API Management, e.g. myapi.azure-api.net
-	{"azure-api-management", regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.azure-api\.net\b`)},
+	{ID: "azure-api-management", Regex: regexp.MustCompile(`(?i)\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.azure-api\.net\b`)},
 	// Container Apps, e.g. app.kindhill-a1b2c3.eastus.azurecontainerapps.io
-	{"azure-container-apps", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+){2}\.azurecontainerapps\.io\b`)},
+	{ID: "azure-container-apps", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+){2}\.azurecontainerapps\.io\b`)},
 	// Static Web Apps, e.g. app.<random>.<region>.azurestaticapps.net
-	{"azure-static-web-apps", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.azurestaticapps\.net\b`)},
+	{ID: "azure-static-web-apps", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.azurestaticapps\.net\b`)},
 
 	// ---- GCP ----
 	// Cloud Functions (1st gen), e.g. us-central1-my-project.cloudfunctions.net
-	{"gcp-cloud-functions", regexp.MustCompile(`(?i)\b[a-z][a-z0-9-]*\.cloudfunctions\.net\b`)},
+	{ID: "gcp-cloud-functions", Regex: regexp.MustCompile(`(?i)\b[a-z][a-z0-9-]*\.cloudfunctions\.net\b`)},
 	// Cloud Run / Cloud Functions v2. Covers deterministic
 	// (service-<projectnumber>.<region>.run.app), non-deterministic
 	// (service-<hash>.run.app), and legacy (service-<hash>-<code>.a.run.app).
-	{"gcp-cloud-run", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)?\.(?:a\.)?run\.app\b`)},
+	{ID: "gcp-cloud-run", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)?\.(?:a\.)?run\.app\b`)},
 
 	// ---- Vercel ----
 	// Production and per-deployment URLs, e.g. project.vercel.app and
 	// project-<hash>-<scope>.vercel.app
-	{"vercel", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.vercel\.app\b`)},
+	{ID: "vercel", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.vercel\.app\b`)},
 
 	// ---- Heroku ----
 	// App hostname, e.g. myapp.herokuapp.com
-	{"heroku-app", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.herokuapp\.com\b`)},
+	{ID: "heroku-app", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.herokuapp\.com\b`)},
 	// Current DNS/CNAME target, e.g. myapp.herokudns.com
-	{"heroku-dns", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.herokudns\.com\b`)},
+	{ID: "heroku-dns", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.herokudns\.com\b`)},
 
 	// ---- Other common FaaS / edge ----
 	// Cloudflare Workers, e.g. name.subdomain.workers.dev
-	{"cloudflare-workers", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.workers\.dev\b`)},
+	{ID: "cloudflare-workers", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.workers\.dev\b`)},
 	// Netlify, e.g. site.netlify.app (functions at /.netlify/functions/<name>)
-	{"netlify", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.netlify\.app\b`)},
+	{ID: "netlify", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.netlify\.app\b`)},
 	// Supabase Edge Functions. Host alone (*.supabase.co) is broad, so this
 	// anchors on the function path to stay function-specific.
-	{"supabase-functions", regexp.MustCompile(`(?i)\b[a-z0-9]+\.supabase\.co/functions/v1/[a-z0-9_-]+`)},
+	{ID: "supabase-functions", Regex: regexp.MustCompile(`(?i)\b[a-z0-9]+\.supabase\.co/functions/v1/[a-z0-9_-]+`)},
 	// DigitalOcean Functions, e.g. faas-nyc1-abc123.doserverless.co
-	{"digitalocean-functions", regexp.MustCompile(`(?i)\bfaas-[a-z0-9]+-[a-z0-9]+\.doserverless\.co\b`)},
+	{ID: "digitalocean-functions", Regex: regexp.MustCompile(`(?i)\bfaas-[a-z0-9]+-[a-z0-9]+\.doserverless\.co\b`)},
 
 	// Fly.io, e.g. empty-sea-2541.fly.dev
-	{"fly-io", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.fly\.dev\b`)},
+	{ID: "fly-io", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.fly\.dev\b`)},
 	// Render, e.g. my-service.onrender.com
-	{"render", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.onrender\.com\b`)},
+	{ID: "render", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.onrender\.com\b`)},
 	// Railway. Newer service domains use .up.railway.app; older use .railway.app
-	{"railway", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(?:up\.)?railway\.app\b`)},
+	{ID: "railway", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(?:up\.)?railway\.app\b`)},
 	// Koyeb, e.g. my-app-org.koyeb.app
-	{"koyeb", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.koyeb\.app\b`)},
+	{ID: "koyeb", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.koyeb\.app\b`)},
 	// AWS Amplify hosting, e.g. main.d1a2b3c4.amplifyapp.com
-	{"aws-amplify", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.amplifyapp\.com\b`)},
+	{ID: "aws-amplify", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.amplifyapp\.com\b`)},
 
 	// ---- Edge / isolate runtimes ----
 	// Deno Deploy, e.g. my-project.deno.dev (and <project>-<id>.deno.dev)
-	{"deno-deploy", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.deno\.dev\b`)},
+	{ID: "deno-deploy", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.deno\.dev\b`)},
 	// Cloudflare Pages, e.g. my-site.pages.dev
-	{"cloudflare-pages", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.pages\.dev\b`)},
+	{ID: "cloudflare-pages", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.pages\.dev\b`)},
 	// Fastly Compute, e.g. my-service.edgecompute.app
-	{"fastly-compute", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.edgecompute\.app\b`)},
+	{ID: "fastly-compute", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.edgecompute\.app\b`)},
 	// Fermyon Cloud (Spin/WASM), e.g. my-app.fermyon.app
-	{"fermyon-cloud", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.fermyon\.app\b`)},
+	{ID: "fermyon-cloud", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.fermyon\.app\b`)},
 	// Modal web endpoints, e.g. workspace--app-fn.modal.run
-	{"modal", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.modal\.run\b`)},
+	{ID: "modal", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.modal\.run\b`)},
 	// Val Town, e.g. user-valname.web.val.run
-	{"val-town", regexp.MustCompile(`(?i)\b(?:[a-z0-9][a-z0-9-]*\.)+val\.run\b`)},
+	{ID: "val-town", Regex: regexp.MustCompile(`(?i)\b(?:[a-z0-9][a-z0-9-]*\.)+val\.run\b`)},
 
 	// ---- BaaS function/HTTP endpoints ----
 	// Firebase Hosting / functions rewrites, e.g. my-app.web.app or *.firebaseapp.com
-	{"firebase-hosting", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(?:web\.app|firebaseapp\.com)\b`)},
+	{ID: "firebase-hosting", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.(?:web\.app|firebaseapp\.com)\b`)},
 	// Convex HTTP actions (.convex.site) and API (.convex.cloud)
-	{"convex", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.convex\.(?:site|cloud)\b`)},
+	{ID: "convex", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.convex\.(?:site|cloud)\b`)},
 	// Twilio Functions, e.g. service-1234.twil.io
-	{"twilio-functions", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.twil\.io\b`)},
+	{ID: "twilio-functions", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.twil\.io\b`)},
 
 	// ---- AWS edge functions (run on AWS-owned infra, see notes) ----
 	// CloudFront distribution domains often front CloudFront Functions / Lambda@Edge
-	{"aws-cloudfront", regexp.MustCompile(`(?i)\b[a-z0-9]+\.cloudfront\.net\b`)},
+	{ID: "aws-cloudfront", Regex: regexp.MustCompile(`(?i)\b[a-z0-9]+\.cloudfront\.net\b`)},
 
 	// ---- Regional / enterprise clouds (BEST-EFFORT — verify vs real samples) ----
 	// Scaleway Functions, e.g. <ns>-<fn>.functions.fnc.fr-par.scw.cloud
-	{"scaleway-functions", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.functions\.fnc\.[a-z0-9-]+\.scw\.cloud\b`)},
+	{ID: "scaleway-functions", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.functions\.fnc\.[a-z0-9-]+\.scw\.cloud\b`)},
 	// IBM Cloud Code Engine, e.g. app.abcd1234.us-south.codeengine.appdomain.cloud
-	{"ibm-code-engine", regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.[a-z0-9]+\.[a-z0-9-]+\.codeengine\.appdomain\.cloud\b`)},
+	{ID: "ibm-code-engine", Regex: regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9-]*\.[a-z0-9]+\.[a-z0-9-]+\.codeengine\.appdomain\.cloud\b`)},
 	// Alibaba Function Compute, e.g. <account-id>.<region>.fc.aliyuncs.com
-	{"alibaba-fc", regexp.MustCompile(`(?i)\b[0-9]+\.[a-z0-9-]+\.fc\.aliyuncs\.com\b`)},
+	{ID: "alibaba-fc", Regex: regexp.MustCompile(`(?i)\b[0-9]+\.[a-z0-9-]+\.fc\.aliyuncs\.com\b`)},
 	// Oracle Functions via OCI API Gateway, e.g. <id>.apigateway.<region>.oci.customer-oci.com
-	{"oracle-apigateway", regexp.MustCompile(`(?i)\b[a-z0-9]+\.apigateway\.[a-z0-9-]+\.oci\.customer-oci\.com\b`)},
+	{ID: "oracle-apigateway", Regex: regexp.MustCompile(`(?i)\b[a-z0-9]+\.apigateway\.[a-z0-9-]+\.oci\.customer-oci\.com\b`)},
 	// Tencent SCF via API Gateway, e.g. service-xxxx-1250000000.<region>.apigw.tencentcs.com
-	{"tencent-scf", regexp.MustCompile(`(?i)\bservice-[a-z0-9]+-[0-9]+\.[a-z0-9-]+\.apigw\.tencentcs\.com\b`)},
+	{ID: "tencent-scf", Regex: regexp.MustCompile(`(?i)\bservice-[a-z0-9]+-[0-9]+\.[a-z0-9-]+\.apigw\.tencentcs\.com\b`)},
 }
 
 // matchInfoURL returns the ID of the first info URL pattern whose regex matches
