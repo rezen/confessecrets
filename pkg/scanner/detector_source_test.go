@@ -106,7 +106,7 @@ const mode = process.env.API_KEY == "shouldnotflagcompare";`,
 func TestSourceComments(t *testing.T) {
 	rules := testRules(t)
 
-	const awsToken = "AKIAIOSFODNN7EXAMPLE" // gitleaks aws-access-token shape
+	const awsToken = "AKIAIOSFODNN7EXAMPLE" // aws-access-token shape
 
 	cases := []struct {
 		name       string
@@ -173,7 +173,7 @@ func TestSourceComments(t *testing.T) {
 // supported language. The defining behavior under test: a secret-named
 // assignment to a *string literal* is flagged, but the same name assigned from a
 // runtime lookup (os.environ.get / getenv / process.env) is not — the value node
-// is a call, not a literal. It also checks value-shape (gitleaks) detection on
+// is a call, not a literal. It also checks value-shape detection on
 // bare literals.
 //
 // Grammars are embedded in the binary (pure-Go runtime), so this runs anywhere
@@ -181,7 +181,7 @@ func TestSourceComments(t *testing.T) {
 func TestSourceDetector(t *testing.T) {
 	rules := testRules(t)
 
-	const awsToken = "AKIAIOSFODNN7EXAMPLE" // matches the gitleaks aws-access-token shape
+	const awsToken = "AKIAIOSFODNN7EXAMPLE" // matches the aws-access-token shape
 
 	cases := []struct {
 		name       string

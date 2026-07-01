@@ -43,19 +43,19 @@ const (
 )
 
 // Reason prefixes for findings whose reason carries a dynamic suffix: the matched
-// gitleaks rule id, custom detector name, recognized service id, or measured
+// matched value-pattern rule id, custom detector name, recognized service id, or measured
 // entropy. Pair each with its constructor below rather than concatenating inline,
 // so the reason vocabulary stays in one place.
 const (
-	reasonPrefixGitleaks    = "gitleaks:"
+	reasonPrefixSig         = "sig:"
 	reasonPrefixCustom      = "custom:"
 	reasonPrefixInfo        = "info:"
 	reasonPrefixHighEntropy = "high_entropy:"
 )
 
-// gitleaksReason / customReason / infoReason build a reason from its prefix and
+// sigReason / customReason / infoReason build a reason from its prefix and
 // the matched id, detector name, or service id.
-func gitleaksReason(ruleID string) string   { return reasonPrefixGitleaks + ruleID }
+func sigReason(ruleID string) string        { return reasonPrefixSig + ruleID }
 func customReason(detector string) string   { return reasonPrefixCustom + detector }
 func infoReason(id string) string           { return reasonPrefixInfo + id }
 
@@ -486,7 +486,7 @@ func isLikelySecretValue(name, value string, rule Rule, lang string) bool {
 	return !isStopword(value, rule)
 }
 
-// isStopword reports whether value is a known non-secret: as in gitleaks, it
+// isStopword reports whether value is a known non-secret: it
 // matches when the value contains (case-insensitively) any word from the built-in
 // stopword set or any extra stopword configured on the rule.
 func isStopword(value string, rule Rule) bool {

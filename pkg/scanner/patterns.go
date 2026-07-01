@@ -1,32 +1,34 @@
 package scanner
 
-//go:generate go run ../../cmd/generate/patterns -in ../../gitleaks.toml -out patterns_gitleaks_gen.go
+//go:generate go run ../../cmd/generate/patterns -in ../../gitleaks.toml -out patterns_gen.go
 
 import (
 	"regexp"
 	"strings"
 )
 
-// ValuePattern is a gitleaks-style rule that recognizes a secret by the shape of
+// ValuePattern is a value-shape rule that recognizes a secret by the shape of
 // the value itself, independent of any surrounding key name.
 type ValuePattern struct {
 	ID    string
 	Regex *regexp.Regexp
-	// Allow are per-rule allowlist regexes (carried from gitleaks.toml): when the
+	// Allow are per-rule allowlist regexes (carried from the source ruleset): when the
 	// Regex matches but any Allow regex also matches the value, it is suppressed
 	// (e.g. AWS example keys ending in EXAMPLE). Nil for the hand-curated rules.
 	Allow []*regexp.Regexp
 }
 
-// gitleaksPatterns are high-confidence, self-identifying secret token patterns
-// adapted from gitleaks (github.com/gitleaks/gitleaks, cmd/generate/config/rules).
+// builtinPatterns are high-confidence, self-identifying secret token patterns.
+//
+// The rule set is adapted from gitleaks (github.com/gitleaks/gitleaks),
+// MIT License, Copyright (c) 2019 Zachary Rice.
 //
 // They are adjusted for Go's RE2 engine and for matching values that have
 // already been extracted from their keys: the raw-text leading/trailing context
 // and capture groups used in the upstream rules are dropped, keeping the core
 // token shape. Keyword-gated rules that rely on surrounding prose (e.g. heroku,
 // telegram) are intentionally omitted because they would match bare UUIDs here.
-var gitleaksPatterns = []ValuePattern{
+var builtinPatterns = []ValuePattern{
 	{ID: "aws-access-token", Regex: regexp.MustCompile(`\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b`)},
 	{ID: "github-pat", Regex: regexp.MustCompile(`\bghp_[0-9a-zA-Z]{36}\b`)},
 	{ID: "github-fine-grained-pat", Regex: regexp.MustCompile(`\bgithub_pat_\w{82}\b`)},
@@ -49,14 +51,14 @@ var gitleaksPatterns = []ValuePattern{
 	{ID: "shopify-shared-secret", Regex: regexp.MustCompile(`\bshpss_[a-fA-F0-9]{32}\b`)},
 }
 
-// matchValuePattern returns the ID of the first gitleaks pattern whose regex
+// matchValuePattern returns the ID of the first built-in pattern whose regex
 // matches value, or "" if none match. The hand-curated patterns are consulted
 // first so their tuned forms take precedence over the auto-generated set.
 func matchValuePattern(value string) string {
-	if id := scanValuePatterns(value, gitleaksPatterns); id != "" {
+	if id := scanValuePatterns(value, builtinPatterns); id != "" {
 		return id
 	}
-	return scanValuePatterns(value, gitleaksGeneratedPatterns)
+	return scanValuePatterns(value, generatedPatterns)
 }
 
 // scanValuePatterns returns the ID of the first pattern in pats whose regex
@@ -226,11 +228,11 @@ func recentFindings(findings []Finding, n int) []Finding {
 	return findings[len(findings)-n:]
 }
 
-// detectValuePatterns scans a single value against the built-in gitleaks
+// detectValuePatterns scans a single value against the built-in value-shape
 // patterns and any configured custom (trufflehog-style) detectors, independent
 // of the key name. It honors the configured value-ignore prefixes/patterns (so
 // suppressions still apply) and emits at most one finding. The built-in patterns
-// take precedence and are tagged "gitleaks:<rule-id>"; a custom detector match
+// take precedence and are tagged "sig:<rule-id>"; a custom detector match
 // is tagged "custom:<detector-name>".
 func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 	value := normalizeScalar(focus.Value)
@@ -258,7 +260,7 @@ func detectValuePatterns(focus ExaminationFocus, set RuleSet) []Finding {
 			"value_pattern",
 			focus.Name,
 			value,
-			gitleaksReason(id),
+			sigReason(id),
 		)}
 	}
 

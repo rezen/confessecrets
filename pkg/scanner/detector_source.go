@@ -108,7 +108,7 @@ type sourceLang struct {
 	pairQuery string
 
 	// valueQuery captures @value over every string literal, for value-shape
-	// (gitleaks-style) scanning regardless of the surrounding name.
+	// (value-shape) scanning regardless of the surrounding name.
 	valueQuery string
 
 	// envQuery captures @fn (the callee), @envname (the first string argument,
@@ -545,7 +545,7 @@ func (l *loadedLang) detectNamed(file string, data []byte, tree *ts.Tree, lines 
 }
 
 // detectValues applies value-driven detection: any string literal whose shape
-// matches a gitleaks pattern, regardless of the surrounding name.
+// matches a value-shape pattern, regardless of the surrounding name.
 func (l *loadedLang) detectValues(file string, data []byte, tree *ts.Tree, lines lineIndex, set RuleSet, names map[uint32]string) []Finding {
 	var findings []Finding
 
@@ -606,7 +606,7 @@ func (l *loadedLang) namedValueOffsets(data []byte, tree *ts.Tree) map[uint32]st
 // AST lets us reach it, where a call-skipping scanner cannot.
 //
 // It only fires the name-driven case (the env key / first argument signals a
-// secret); a fallback whose *shape* matches a gitleaks pattern is already caught
+// secret); a fallback whose *shape* matches a value-shape pattern is already caught
 // by detectValues, which scans every string literal including this one.
 func (l *loadedLang) detectEnvFallback(file string, data []byte, tree *ts.Tree, lines lineIndex, rules []Rule) []Finding {
 	if l.envQ == nil {
@@ -826,7 +826,7 @@ func (l *loadedLang) detectLogicalDefault(file string, data []byte, tree *ts.Tre
 // passes never see them; a key pasted into a commented-out line or an "old token,
 // rotate me" note would otherwise slip through entirely.
 //
-// Only the gitleaks value-shape patterns run here. Name-driven heuristics have no
+// Only the value-shape patterns run here. Name-driven heuristics have no
 // reliable key to anchor on in free prose, and the generic high-entropy detector
 // would fire on ordinary comment text — both are deliberately excluded so this
 // pass stays low-noise. The matched token, not the whole comment, is reported,
@@ -853,14 +853,14 @@ func (l *loadedLang) detectComments(file string, data []byte, tree *ts.Tree, lin
 				"comment",
 				"",
 				s.token,
-				gitleaksReason(s.id),
+				sigReason(s.id),
 			))
 		}
 	})
 	return findings
 }
 
-// commentSecret is a gitleaks token found inside a comment, carrying its byte
+// commentSecret is a value-pattern token found inside a comment, carrying its byte
 // offset within the comment text so the finding can be attributed to the right
 // line of a multi-line comment.
 type commentSecret struct {
@@ -869,7 +869,7 @@ type commentSecret struct {
 	offset int
 }
 
-// findCommentSecrets returns every gitleaks value-pattern match in text, in
+// findCommentSecrets returns every value-pattern match in text, in
 // offset order and deduplicated by token (the same secret pasted twice is
 // reported once). Only the high-confidence token patterns are applied — see
 // detectComments for why the name-driven and high-entropy heuristics are not.
@@ -889,8 +889,8 @@ func findCommentSecrets(text string) []commentSecret {
 			}
 		}
 	}
-	scan(gitleaksPatterns)
-	scan(gitleaksGeneratedPatterns)
+	scan(builtinPatterns)
+	scan(generatedPatterns)
 
 	sort.SliceStable(out, func(i, j int) bool { return out[i].offset < out[j].offset })
 	return out

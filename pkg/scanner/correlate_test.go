@@ -32,11 +32,11 @@ func TestCorrelatePairEmbedsAndDrops(t *testing.T) {
 	rules := mustCorrelations(t, []CorrelationConfig{{
 		ID:       "aws-credential-pair",
 		Match:    FindingMatcher{NameRegex: "(?i)secret_access_key"},
-		Partners: []FindingMatcher{{ReasonRegex: "gitleaks:aws-access-token"}},
+		Partners: []FindingMatcher{{ReasonRegex: "sig:aws-access-token"}},
 	}})
 
 	in := []Finding{
-		finding("aws_access_key_id", "gitleaks:aws-access-token", "line:1"),
+		finding("aws_access_key_id", "sig:aws-access-token", "line:1"),
 		finding("aws_secret_access_key", "high_entropy:4.9", "line:2"),
 	}
 
@@ -94,11 +94,11 @@ func TestCorrelateDropsFileFromEmbeddedPartner(t *testing.T) {
 	rules := mustCorrelations(t, []CorrelationConfig{{
 		ID:       "aws-credential-pair",
 		Match:    FindingMatcher{NameRegex: "(?i)secret_access_key"},
-		Partners: []FindingMatcher{{ReasonRegex: "gitleaks:aws-access-token"}},
+		Partners: []FindingMatcher{{ReasonRegex: "sig:aws-access-token"}},
 	}})
 
 	in := []Finding{
-		{Name: "aws_access_key_id", Reason: "gitleaks:aws-access-token", Path: "line:1", File: "creds.env"},
+		{Name: "aws_access_key_id", Reason: "sig:aws-access-token", Path: "line:1", File: "creds.env"},
 		{Name: "aws_secret_access_key", Reason: "high_entropy:4.9", Path: "line:2", File: "creds.env"},
 	}
 
@@ -275,11 +275,11 @@ func TestCorrelateExpressionForm(t *testing.T) {
 		ID:  "aws-pair-expr",
 		Tag: "aws-credential-pair",
 		When: `current.name matches "(?i)secret_access_key" ` +
-			`&& prev.reason == "gitleaks:aws-access-token"`,
+			`&& prev.reason == "sig:aws-access-token"`,
 	}})
 
 	in := []Finding{
-		finding("aws_access_key_id", "gitleaks:aws-access-token", "line:1"),
+		finding("aws_access_key_id", "sig:aws-access-token", "line:1"),
 		finding("aws_secret_access_key", "high_entropy:4.9", "line:2"),
 	}
 
@@ -436,14 +436,14 @@ func TestBuiltinJWTURLCorrelation(t *testing.T) {
 		t.Errorf("want auth_url folded into jwt, got %+v", out[0].Correlated)
 	}
 
-	// The pattern-matched form (gitleaks:jwt) also pairs.
+	// The pattern-matched form (sig:jwt) also pairs.
 	in = []Finding{
 		finding("BASE_URL", "info:azure-app-service", "line:1"),
-		finding("token", "gitleaks:jwt", "line:2"),
+		finding("token", "sig:jwt", "line:2"),
 	}
 	out = correlateFindings(in, rules)
 	if len(out) != 1 || !hasTag(out[0].Tags, "jwt-url") {
-		t.Fatalf("gitleaks:jwt did not pair with URL: %+v", out)
+		t.Fatalf("sig:jwt did not pair with URL: %+v", out)
 	}
 
 	// A key whose name reads like a JWT also pairs, even when its value was not

@@ -10,7 +10,7 @@ It coaxes out secrets two complementary ways:
 
 - **Name-driven** — a key whose name practically advertises guilt (e.g. `password`,
   `api_key`, `client_secret`) paired with a populated, secret-looking value.
-- **Value-driven** — a value whose *shape* gives it away (gitleaks-style patterns
+- **Value-driven** — a value whose *shape* gives it away (value-shape patterns
   such as `AKIA…`, `ghp_…`, `sk_live_…`), no matter how innocent its key name
   claims to be.
 
@@ -118,7 +118,7 @@ included so you can correlate without storing the secret itself.
   "value_sha256": "6675cd0c…",
   "entropy": 4.71,
   "name_value_distance": 38,
-  "reason": "gitleaks:github-pat",
+  "reason": "sig:github-pat",
   "tags": ["value-pattern"]
 }
 ```
@@ -149,7 +149,7 @@ drop name-driven findings at or above a chosen similarity (`0` disables it).
 
 The `reason` field explains why it was flagged — e.g. `jwt_indicator`,
 `url_credentials`, `private_key_indicator`, `name_indicates_secret` for a
-name-driven finding, or `gitleaks:<rule-id>` for a value-pattern match. Findings can also carry an
+name-driven finding, or `sig:<rule-id>` for a value-pattern match. Findings can also carry an
 optional `meta` object with value-derived context:
 
 - `jwt` — for JSON Web Token values: the decoded `header`, the parsed claims
@@ -186,7 +186,7 @@ Detection covers several shapes:
 
 - **name-driven** — a secret-looking variable assigned a string literal
   (`password = "…"`).
-- **value-driven** — any string literal whose shape matches a gitleaks pattern,
+- **value-driven** — any string literal whose shape matches a value-shape pattern,
   regardless of the surrounding name (`"AKIA…"`, `"ghp_…"`).
 - **env fallback** — a hardcoded default behind an environment/config lookup,
   whether passed as an argument (`os.getenv("DB_PASSWORD", "hunter2")`) or via a
@@ -272,7 +272,7 @@ stopwords:
   - internalfixture
 ```
 
-Value-pattern (gitleaks) scanning is built in and always on; it honors
+Value-pattern scanning is built in and always on; it honors
 `ignore_value_prefixes` / `ignore_value_patterns` so you can suppress
 false positives.
 
@@ -285,7 +285,7 @@ value to catch what the name and shape rules miss:
   credentials) bypass the gate.
 - `high_entropy_threshold` is a *detector*: any opaque token-like value
   (whitespace-free, ≤200 chars) whose entropy meets it is flagged regardless of
-  key name, reported as `high_entropy:<measured>`. Built-in gitleaks and custom
+  key name, reported as `high_entropy:<measured>`. Built-in and custom
   detectors take precedence, and rule `ignore_*` suppressions still apply. It is
   noisy when scanning source code (many string literals sit near the secret
   range), so it ships disabled; enable it (e.g. `4.5`) for config-only scans
@@ -309,19 +309,17 @@ only as a whole value, since `@` and `%` also occur inside genuine secrets.
 
 A name-driven candidate is also dropped when its value contains a **stopword** —
 a common word or placeholder fragment that marks it as a non-secret. The built-in
-set is gitleaks'
-[`DefaultStopWords`](https://github.com/gitleaks/gitleaks/blob/master/cmd/generate/config/rules/stopwords.go),
-matched the same way gitleaks does: case-insensitively, by substring (a value
+set is matched case-insensitively, by substring (a value
 containing `changeme`, `example`, `test`, … anywhere is skipped). The built-in
 set is always on; add project-specific entries with the top-level `stopwords`
 list, which applies across all rules (also matched case-insensitively by
 substring). Values carrying a definite secret
-reason (JWT, private key, URL credentials) and built-in gitleaks value patterns
+reason (JWT, private key, URL credentials) and built-in value patterns
 are matched before this check, so a real token is never lost to a stopword.
 
 ### Custom value-pattern detectors
 
-Beyond the built-in gitleaks patterns, you can define your own value-shape
+Beyond the built-in patterns, you can define your own value-shape
 detectors using [trufflehog's custom-detector schema](https://trufflesecurity.com/docs/custom-detectors).
 Each detector flags a value by its *shape* alone — regardless of the surrounding
 key name — and matches are tagged `custom:<name>` in the `reason` field.
@@ -348,7 +346,7 @@ group, its first group is the reported secret; otherwise the whole match is.
 entropy/exclude-checked, defaulting to the alphabetically first. The
 `exclude_*` and `entropy` fields are optional false-positive filters. Custom
 detectors honor the same `ignore_value_prefixes` / `ignore_value_patterns`
-suppressions as the built-in patterns, and a built-in gitleaks match takes
+suppressions as the built-in patterns, and a built-in value-shape match takes
 precedence over a custom one for the same value.
 
 Notes:
@@ -381,7 +379,7 @@ filter:
   # Mapping → tag action: keep value-pattern hits, tagged "value-pattern".
   - id: value-pattern
     action: tag
-    filter: 'reason startsWith "gitleaks:"'
+    filter: 'reason startsWith "sig:"'
 ```
 
 Every rule runs against every finding, so one finding can be tagged by several
@@ -402,7 +400,7 @@ The variables available to an expression are:
 
 expr-lang operators and built-ins work too, so richer rules like
 `value matches "(?i)example$"`, `name contains "test"`, or
-`reason startsWith "gitleaks:"` are valid. Each expression is type-checked at load
+`reason startsWith "sig:"` are valid. Each expression is type-checked at load
 time, so a bad filter fails fast.
 
 To see what the `filter`-action rules are removing, run with `-show-filtered`:
@@ -475,6 +473,15 @@ pkg/scanner/        library: config, file walking, detection
   models.go         types (Config, Rule, RuleSet, Finding, Meta, Detector…)
   files.go          config loading/compiling, file walking/filtering, format dispatch
   detect.go         per-format detectors + classification helpers
-  patterns.go       gitleaks-style value patterns
+  patterns.go       built-in value-shape patterns (hand-curated)
+  patterns_gen.go   value-shape patterns generated from gitleaks.toml
   detectors.go      custom (trufflehog-style) value-pattern detectors
+gitleaks.toml        source ruleset for the generated value-shape patterns
 ```
+
+## Credits
+
+The built-in value-shape patterns and the stopword list are adapted from
+[gitleaks](https://github.com/gitleaks/gitleaks) (MIT License, © 2019 Zachary
+Rice). The custom value-pattern detector format follows
+[trufflehog's custom-detector schema](https://trufflesecurity.com/docs/custom-detectors).

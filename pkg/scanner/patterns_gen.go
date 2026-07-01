@@ -4,14 +4,14 @@ package scanner
 
 import "regexp"
 
-// gitleaksGeneratedPatterns are value-shape secret patterns auto-derived from
+// generatedPatterns are value-shape secret patterns auto-derived from
 // gitleaks.toml, filtered to rules whose regex has a distinctive fixed token
 // prefix and so are safe to match against an extracted value without the
-// keyword/entropy/context gating gitleaks applies. IDs hand-curated in
+// keyword/entropy/context gating the source rules apply. IDs hand-curated in
 // patterns.go are excluded and take precedence. Regenerate with:
 //
 //	go generate ./pkg/scanner
-var gitleaksGeneratedPatterns = []ValuePattern{
+var generatedPatterns = []ValuePattern{
 	{ID: `1password-secret-key`, Regex: regexp.MustCompile(`\bA3-[A-Z0-9]{6}-(?:(?:[A-Z0-9]{11})|(?:[A-Z0-9]{6}-[A-Z0-9]{5}))-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}\b`)},
 	{ID: `1password-service-account-token`, Regex: regexp.MustCompile(`ops_eyJ[a-zA-Z0-9+/]{250,}={0,3}`)},
 	{ID: `adobe-client-secret`, Regex: regexp.MustCompile(`\b(p8e-(?i)[a-z0-9]{32})(?:[\x60'"\s;]|\\[nr]|$)`)},

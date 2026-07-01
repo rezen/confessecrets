@@ -2,14 +2,15 @@ package scanner
 
 import "strings"
 
-// builtinStopwords is gitleaks' DefaultStopWords list
-// (github.com/gitleaks/gitleaks, cmd/generate/config/rules/stopwords.go), the
-// common words and placeholder fragments that flag a candidate as a non-secret.
-// As in gitleaks, a value is treated as a stopword match when it CONTAINS any of
-// these (case-insensitively) — not only when it equals one. Entries are kept
-// lowercase so matching can lowercase the value once. A rule's configured extra
-// stopwords (RuleConfig.Stopwords) are checked on top of this always-on set; see
-// isStopword.
+// builtinStopwords is the built-in list of common words and placeholder
+// fragments that flag a candidate as a non-secret. A value is treated as a
+// stopword match when it CONTAINS any of these (case-insensitively) — not only
+// when it equals one. Entries are kept lowercase so matching can lowercase the
+// value once. A rule's configured extra stopwords (RuleConfig.Stopwords) are
+// checked on top of this always-on set; see isStopword.
+//
+// Adapted from gitleaks' DefaultStopWords (github.com/gitleaks/gitleaks),
+// MIT License, Copyright (c) 2019 Zachary Rice.
 var builtinStopwords = []string{
 	"000000",
 	"aaaaaa",
@@ -1495,8 +1496,7 @@ var builtinStopwords = []string{
 }
 
 // containsStopword reports whether lower (an already-lowercased value) contains
-// any of the stopwords as a substring, mirroring gitleaks' ContainsStopWord
-// allowlist check.
+// any of the stopwords as a substring (a substring allowlist check).
 func containsStopword(lower string, stopwords []string) bool {
 	for _, w := range stopwords {
 		if w != "" && strings.Contains(lower, w) {

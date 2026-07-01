@@ -361,10 +361,10 @@ func TestIsLikelySecretValueEntropyGate(t *testing.T) {
 }
 
 // TestStopwords covers the built-in and configurable stopwords: a value is
-// dropped when it contains (case-insensitively, by substring, as in gitleaks)
+// dropped when it contains (case-insensitively, by substring)
 // any built-in or configured extra stopword, and kept otherwise.
 func TestStopwords(t *testing.T) {
-	// A built-in gitleaks stopword is matched by substring even when embedded.
+	// A built-in stopword is matched by substring even when embedded.
 	open := Rule{MinValueLen: 8}
 	if isLikelySecretValue("token", "Kq7changemeVp9", open, "") {
 		t.Errorf("value containing a built-in stopword should be rejected")
@@ -784,8 +784,8 @@ func TestDetectValuePatternsRegardlessOfName(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected AWS token flagged under benign key, got %+v", findings)
 	}
-	if got.Reason != "gitleaks:aws-access-token" {
-		t.Errorf("reason = %q, want gitleaks:aws-access-token", got.Reason)
+	if got.Reason != "sig:aws-access-token" {
+		t.Errorf("reason = %q, want sig:aws-access-token", got.Reason)
 	}
 }
 
@@ -834,12 +834,12 @@ func TestInfoURLYieldsToSecretValue(t *testing.T) {
 	// A secret query parameter on a recognized service URL must keep the value a
 	// high-severity finding rather than downgrading it to info — but that secret
 	// classification is name/structure-driven, so here we only assert the bare
-	// endpoint URL is the info case while a gitleaks token in the same value wins.
+	// endpoint URL is the info case while a value-shape token in the same value wins.
 	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "line:1", Name: "x", Value: "AKIAIOSFODNN7EXAMPLE.lambda-url.us-east-1.on.aws"}, RuleSet{})
 	if len(findings) != 1 {
 		t.Fatalf("expected one finding, got %+v", findings)
 	}
-	if findings[0].Level != levelHigh || findings[0].Reason != "gitleaks:aws-access-token" {
+	if findings[0].Level != levelHigh || findings[0].Reason != "sig:aws-access-token" {
 		t.Errorf("secret token must win over info URL, got level=%q reason=%q", findings[0].Level, findings[0].Reason)
 	}
 }

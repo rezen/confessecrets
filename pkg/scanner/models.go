@@ -28,7 +28,7 @@ type Config struct {
 	// (see builtinInfoRules) and are evaluated before it. See InfoRuleConfig.
 	Info []InfoRuleConfig `yaml:"info"`
 	// Stopwords are extra non-secret words applied across all rules. As with the
-	// built-in stopword set (gitleaks' DefaultStopWords), a name-driven candidate
+	// built-in stopword set, a name-driven candidate
 	// is dropped when its value contains (case-insensitively) any of these as a
 	// substring. They extend, never replace, the always-on built-in set. Use this
 	// to silence project-specific placeholders such as "redacted".

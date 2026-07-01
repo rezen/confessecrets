@@ -168,14 +168,14 @@ func TestFilterExcludes(t *testing.T) {
 }
 
 func TestFilterStringBuiltins(t *testing.T) {
-	f := compileFilter(t, `value matches "(?i)example$" || reason startsWith "gitleaks:"`)
+	f := compileFilter(t, `value matches "(?i)example$" || reason startsWith "sig:"`)
 
 	for _, tt := range []struct {
 		finding Finding
 		want    bool
 	}{
 		{Finding{RawValue: "AKIAIOSFODNN7EXAMPLE"}, true},
-		{Finding{Reason: "gitleaks:aws-access-token"}, true},
+		{Finding{Reason: "sig:aws-access-token"}, true},
 		{Finding{RawValue: "Xk9mQ2vLp7", Reason: "map key indicates secret"}, false},
 	} {
 		got, err := f.Matches(tt.finding)

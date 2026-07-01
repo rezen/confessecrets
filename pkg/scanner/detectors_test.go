@@ -137,9 +137,9 @@ func TestDetectValuePatternsCustom(t *testing.T) {
 	}
 }
 
-func TestDetectValuePatternsGitleaksPrecedence(t *testing.T) {
+func TestDetectValuePatternsBuiltinPrecedence(t *testing.T) {
 	// A custom detector that also matches an AWS key shape must not shadow the
-	// built-in gitleaks rule: the built-in match wins.
+	// built-in value-shape rule: the built-in match wins.
 	detectors, err := CompileDetectors([]DetectorConfig{{
 		Name:     "my-aws",
 		Keywords: []string{"akia"},
@@ -150,8 +150,8 @@ func TestDetectValuePatternsGitleaksPrecedence(t *testing.T) {
 	}
 
 	findings := detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "AKIA", Value: "AKIAIOSFODNN7EXAMPLE"}, RuleSet{Detectors: detectors})
-	if len(findings) != 1 || findings[0].Reason != "gitleaks:aws-access-token" {
-		t.Fatalf("expected gitleaks precedence, got %+v", findings)
+	if len(findings) != 1 || findings[0].Reason != "sig:aws-access-token" {
+		t.Fatalf("expected built-in precedence, got %+v", findings)
 	}
 }
 
@@ -205,7 +205,7 @@ func TestCustomDetectorEndToEnd(t *testing.T) {
 }
 
 // TestDetectValuePatternsHighEntropy confirms the generic high-entropy detector
-// fires through detectValuePatterns, stays subordinate to the built-in gitleaks
+// fires through detectValuePatterns, stays subordinate to the built-in value-shape
 // patterns, and honors rule suppression.
 func TestDetectValuePatternsHighEntropy(t *testing.T) {
 	rules, err := CompileRules([]RuleConfig{{
@@ -224,10 +224,10 @@ func TestDetectValuePatternsHighEntropy(t *testing.T) {
 		t.Fatalf("expected a high_entropy finding, got %+v", findings)
 	}
 
-	// A built-in gitleaks pattern still wins over the generic entropy detector.
+	// A built-in value-shape pattern still wins over the generic entropy detector.
 	findings = detectValuePatterns(ExaminationFocus{File: "f", Path: "$.x", Name: "anything", Value: "AKIAIOSFODNN7EXAMPLE"}, set)
-	if len(findings) != 1 || findings[0].Reason != "gitleaks:aws-access-token" {
-		t.Fatalf("expected gitleaks precedence, got %+v", findings)
+	if len(findings) != 1 || findings[0].Reason != "sig:aws-access-token" {
+		t.Fatalf("expected built-in precedence, got %+v", findings)
 	}
 
 	// A rule's ignore prefix suppresses the entropy match too.

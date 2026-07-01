@@ -34,7 +34,7 @@ var builtinCorrelations = []CorrelationConfig{
 		// (caught by its name) that signs requests with it.
 		ID:       "aws-credential-pair",
 		Match:    FindingMatcher{NameRegex: `(?i)secret[_-]?access[_-]?key`},
-		Partners: []FindingMatcher{{ReasonRegex: `^gitleaks:aws-access-token$`}},
+		Partners: []FindingMatcher{{ReasonRegex: `^sig:aws-access-token$`}},
 	},
 	{
 		// OAuth2 / OIDC client credentials.
@@ -56,13 +56,13 @@ var builtinCorrelations = []CorrelationConfig{
 	{
 		// A JWT paired with the service or token-endpoint URL it is presented to or
 		// issued by. A finding counts as a JWT when its value shape was detected as
-		// one (reason jwt_indicator, or gitleaks:jwt for the pattern-matched form)
+		// one (reason jwt_indicator, or sig:jwt for the pattern-matched form)
 		// or its key name reads like one (a "jwt" key whose value the detector did
 		// not classify — truncated, templated, or referenced indirectly). Same URL
 		// partner test as client-secret-url.
 		ID: "jwt-url",
 		Match: FindingMatcher{Expr: `reason == "jwt_indicator" || ` +
-			`reason == "gitleaks:jwt" || lower(name) contains "jwt"`},
+			`reason == "sig:jwt" || lower(name) contains "jwt"`},
 		Partners: []FindingMatcher{{Expr: urlPartnerExpr}},
 	},
 	{

@@ -26,13 +26,13 @@ jobs:
         run: go mod download
 
       - name: Verify generated patterns are up to date
-        # The gitleaks-derived value patterns are committed (patterns_gitleaks_gen.go).
+        # The generated value patterns are committed (patterns_gen.go).
         # Regenerate and fail if the result differs from what's checked in, so an edit
         # to gitleaks.toml or the generator can't silently drift from the committed file.
         run: |
           go generate ./pkg/scanner
-          if ! git diff --exit-code -- pkg/scanner/patterns_gitleaks_gen.go; then
-            echo "::error::patterns_gitleaks_gen.go is out of date. Run 'go generate ./pkg/scanner' and commit the result." >&2
+          if ! git diff --exit-code -- pkg/scanner/patterns_gen.go; then
+            echo "::error::patterns_gen.go is out of date. Run 'go generate ./pkg/scanner' and commit the result." >&2
             exit 1
           fi
 
